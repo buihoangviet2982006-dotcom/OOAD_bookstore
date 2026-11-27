@@ -87,3 +87,10 @@ export function emptyNumberFields(fields: Record<string, NumberInput>): string[]
     .filter(([, value]) => value === "")
     .map(([label]) => label);
 }
+
+export function createRequestKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}

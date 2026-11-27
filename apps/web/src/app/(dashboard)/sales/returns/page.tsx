@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, RotateCcw, Search } from "lucide-react";
 import { Badge, Modal, PageHeader } from "@/components/ui";
-import { shouldUseMock } from "@/config/api";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
 import { formatCurrency, formatDate, formatDateTime, todayIsoDate } from "@/lib/format";
@@ -31,7 +30,7 @@ export default function ReturnsPage() {
   const [exchangeBookId, setExchangeBookId] = useState("");
 
   // API thật (cờ "returns"): tiền hoàn / khách bù lấy từ preview backend. Mock: tính tạm trên FE như cũ.
-  const realReturns = !shouldUseMock("returns");
+  const realReturns = true;
   const [submitting, setSubmitting] = useState(false);
   // Khóa chống lập phiếu lặp: sinh khi mở form, giữ nguyên khi lỗi để thử lại an toàn.
   const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());

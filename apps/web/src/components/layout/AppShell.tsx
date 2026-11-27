@@ -2,7 +2,7 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import {
   BarChart3,
   BookOpen,
@@ -12,7 +12,6 @@ import {
   LogOut,
   Menu,
   ReceiptText,
-  RefreshCw,
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
@@ -26,19 +25,9 @@ import {
   Warehouse,
   X,
 } from "lucide-react";
-import { anyModuleUsesMock } from "@/config/api";
 import { BRAND_CONFIG } from "@/config/brand";
-import {
-  canAccessPath,
-  NAV_SECTIONS,
-  type NavItem,
-  ROLE_LABELS,
-  ROLE_SHORT_LABELS,
-} from "@/config/navigation";
+import { canAccessPath, NAV_SECTIONS, type NavItem, ROLE_LABELS } from "@/config/navigation";
 import { useAuth } from "@/context/AuthContext";
-import { useToast } from "@/context/ToastContext";
-import { resetMockDb } from "@/mocks/store";
-import type { UserRole } from "@/types";
 
 const ICON_MAP: Record<NavItem["iconName"], React.ComponentType<{ className?: string }>> = {
   LayoutGrid,
@@ -59,15 +48,7 @@ const ICON_MAP: Record<NavItem["iconName"], React.ComponentType<{ className?: st
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const router = useRouter();
-  const {
-    user,
-    isHydrated,
-    canSwitchRole,
-    switchRole,
-    logout,
-  } = useAuth();
-  const { showToast } = useToast();
+  const { user, isHydrated, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (!isHydrated) {
@@ -98,14 +79,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const allowed = canAccessPath(user.role, pathname);
-  // Nút khôi phục dữ liệu mẫu chỉ có ý nghĩa với dữ liệu Mock trong trình duyệt.
-  const mockMode = anyModuleUsesMock();
-
-  const handleResetDemo = () => {
-    resetMockDb();
-    showToast("Đã khôi phục dữ liệu mẫu ban đầu", "info", "Tải lại trang nếu bạn muốn làm mới danh sách.");
-    router.refresh();
-  };
 
   const sidebarContent = (
     <div className="flex h-full flex-col bg-white border-r border-[#E6E8E5]">
@@ -134,7 +107,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </button>
       </div>
 
-      {/* Cửa hàng – hệ thống demo một cửa hàng, không chọn chi nhánh */}
+      {/* Store Info */}
       <div className="px-4 pb-3">
         <div className="relative rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] p-2.5">
           <div className="flex items-center gap-2.5">
@@ -142,8 +115,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Store className="h-4 w-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-xs font-semibold text-zinc-800">{BRAND_CONFIG.store.name}</div>
-              <div className="truncate text-[11px] text-zinc-500">{BRAND_CONFIG.store.address}</div>
+              <div className="truncate text-xs font-semibold text-zinc-800">
+                {BRAND_CONFIG.store.name}
+              </div>
+              <div className="truncate text-[11px] text-zinc-500">
+                {BRAND_CONFIG.store.address}
+              </div>
             </div>
           </div>
         </div>
@@ -208,7 +185,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         })}
       </nav>
 
-      {/* Support & Demo Reset Box */}
+      {/* Support Box */}
       <div className="p-3">
         <div className="rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] p-3.5">
           <div className="flex items-center gap-2 text-xs font-semibold text-zinc-800">
@@ -216,20 +193,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             Cần hỗ trợ?
           </div>
           <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
-            {mockMode
-              ? "Đang chạy dữ liệu Mock trong trình duyệt (không lưu vào máy chủ)."
-              : "Quên mật khẩu hoặc tài khoản bị khóa: liên hệ Quản lý cửa hàng."}
+            Quên mật khẩu hoặc tài khoản bị khóa: liên hệ Quản lý cửa hàng.
           </p>
-          {mockMode && (
-            <button
-              type="button"
-              onClick={handleResetDemo}
-              className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-medium text-[#2D6A4F] hover:underline"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              Khôi phục dữ liệu mẫu
-            </button>
-          )}
         </div>
       </div>
     </div>
@@ -237,25 +202,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen bg-[#F7F8F6]">
-      {/* Desktop Sidebar */}
       <aside className="no-print hidden lg:fixed lg:inset-y-0 lg:z-30 lg:flex lg:w-64 lg:flex-col">
         {sidebarContent}
       </aside>
 
-      {/* Mobile Sidebar */}
       {mobileOpen && (
         <div className="no-print fixed inset-0 z-40 flex lg:hidden">
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={() => setMobileOpen(false)}
-          />
+          <div className="fixed inset-0 bg-black/30" onClick={() => setMobileOpen(false)} />
           <div className="relative z-10 flex w-64 flex-col">{sidebarContent}</div>
         </div>
       )}
 
-      {/* Main Content Area */}
       <div className="flex flex-1 flex-col lg:pl-64 min-w-0">
-        {/* Topbar */}
         <header className="no-print sticky top-0 z-20 flex h-16 items-center justify-between border-b border-[#E6E8E5] bg-white/95 px-4 sm:px-8 backdrop-blur-xs">
           <div className="flex items-center gap-3">
             <button
@@ -265,33 +223,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             >
               <Menu className="h-5 w-5" />
             </button>
-
-            {/* Quick Role Switcher – chỉ hiện ở chế độ Mock, ẩn khi dùng xác thực thật */}
-            {canSwitchRole && (
-            <div className="hidden md:flex items-center gap-1 rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] p-1">
-              <span className="px-2 text-[11px] font-medium text-zinc-500">Vai trò test:</span>
-              {(["MANAGER", "SALES", "WAREHOUSE"] as UserRole[]).map((roleKey) => {
-                const active = user.role === roleKey;
-                return (
-                  <button
-                    key={roleKey}
-                    type="button"
-                    onClick={() => {
-                      switchRole(roleKey);
-                      showToast(`Đã chuyển sang vai trò: ${ROLE_LABELS[roleKey]}`, "info");
-                    }}
-                    className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors ${
-                      active
-                        ? "bg-[#2D6A4F] text-white"
-                        : "text-zinc-600 hover:bg-white hover:text-zinc-900"
-                    }`}
-                  >
-                    {ROLE_SHORT_LABELS[roleKey]}
-                  </button>
-                );
-              })}
-            </div>
-            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -321,7 +252,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        {/* Page Body */}
         <main className="flex-1 px-4 py-6 sm:px-8 sm:py-7 max-w-[1440px] w-full mx-auto">
           {allowed ? (
             children
@@ -334,9 +264,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Phân hệ này không thuộc quyền của {ROLE_LABELS[user.role]}
               </h2>
               <p className="mt-1.5 text-sm text-zinc-500">
-                {canSwitchRole
-                  ? "Tài khoản hiện tại không được phân quyền truy cập trang này. Bạn có thể quay về Tổng quan hoặc đổi sang vai trò Quản lý trên thanh tiêu đề để kiểm tra."
-                  : "Tài khoản hiện tại không được phân quyền truy cập trang này. Vui lòng quay về Tổng quan hoặc liên hệ Quản lý."}
+                Tài khoản hiện tại không được phân quyền truy cập trang này. Vui lòng quay về Tổng quan hoặc liên hệ Quản lý.
               </p>
               <div className="mt-6 flex items-center justify-center gap-3">
                 <Link
@@ -345,15 +273,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 >
                   Về trang Tổng quan
                 </Link>
-                {canSwitchRole && (
-                  <button
-                    type="button"
-                    onClick={() => switchRole("MANAGER")}
-                    className="rounded-xl border border-[#E6E8E5] bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-                  >
-                    Chuyển sang Quản lý
-                  </button>
-                )}
               </div>
             </div>
           )}

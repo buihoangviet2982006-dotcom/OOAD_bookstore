@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Edit2, Eye, Plus, Search, Trash2 } from "lucide-react";
 import { Badge, Drawer, Modal, PageHeader } from "@/components/ui";
-import { shouldUseMock } from "@/config/api";
 import { useToast } from "@/context/ToastContext";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
 import { salesService } from "@/services";
@@ -302,7 +301,7 @@ export default function CustomersPage() {
               <select
                 value={tier}
                 onChange={(e) => setTier(e.target.value as CustomerTier)}
-                disabled={!shouldUseMock("customers")}
+                disabled
                 title="Hạng thành viên do hệ thống tính từ tổng chi tiêu"
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
               >

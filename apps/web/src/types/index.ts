@@ -461,3 +461,52 @@ export interface DashboardSummary {
   role: UserRole;
   cards: DashboardCard[];
 }
+
+export interface RevenueReportResponse {
+  from: string;
+  to: string;
+  previousFrom: string;
+  previousTo: string;
+  totals: {
+    revenue: number;
+    cost: number;
+    profit: number;
+    orders: number;
+    booksSold: number;
+  };
+  series: RevenuePoint[];
+}
+
+export interface BestsellerRow {
+  bookId: string;
+  sku: string;
+  title: string;
+  qtySold: number;
+  revenue: number;
+}
+
+export interface DashboardCard {
+  key: string;
+  label: string;
+  value: number;
+  format: "currency" | "number";
+  previous: number | null;
+  series: number[] | null;
+}
+
+export interface DashboardSummary {
+  from: string;
+  to: string;
+  previousFrom: string;
+  previousTo: string;
+  role: UserRole;
+  cards: DashboardCard[];
+}
+
+export interface ReturnPreviewResponse {
+  returnValue: number;
+  exchangeValue: number;
+  exchangePriceDiff: number;
+  refundAmount: number;
+  extraPayment: number;
+}

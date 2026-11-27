@@ -3,7 +3,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Edit2, Eye, Plus, Search, Trash2 } from "lucide-react";
 import { Badge, Drawer, Modal, PageHeader } from "@/components/ui";
-import { shouldUseMock } from "@/config/api";
 import { useToast } from "@/context/ToastContext";
 import { emptyNumberFields, formatCurrency, toNumberInput, type NumberInput } from "@/lib/format";
 import { inventoryService } from "@/services";
@@ -12,7 +11,7 @@ import type { Author, Book, BookStatus, Category, Publisher } from "@/types";
 export default function BooksPage() {
   const { showToast } = useToast();
   // Với API thật, tồn kho do chứng từ quyết định – không sửa tay trên form sách.
-  const stockEditable = shouldUseMock("books");
+  const stockEditable = false;
 
   const [books, setBooks] = useState<Book[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);

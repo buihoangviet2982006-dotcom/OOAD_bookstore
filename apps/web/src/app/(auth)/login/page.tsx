@@ -3,20 +3,18 @@
 import React, { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BookOpen, Eye, EyeOff, KeyRound, ShieldCheck, ShoppingBag, Warehouse } from "lucide-react";
+import { BookOpen, Eye, EyeOff } from "lucide-react";
 import { BRAND_CONFIG } from "@/config/brand";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
-import type { UserRole } from "@/types";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, switchRole, canSwitchRole } = useAuth();
+  const { login } = useAuth();
   const { showToast } = useToast();
 
-  // Chỉ điền sẵn tài khoản mẫu ở chế độ Mock; xác thực thật thì để trống.
-  const [identifier, setIdentifier] = useState(canSwitchRole ? "minhanh.ql" : "");
-  const [password, setPassword] = useState(canSwitchRole ? "123456" : "");
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
   const [showPwd, setShowPwd] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -38,12 +36,6 @@ export default function LoginPage() {
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const quickLogin = (role: UserRole, targetPath: string) => {
-    switchRole(role);
-    showToast("Đăng nhập nhanh tài khoản mẫu thành công!");
-    router.push(targetPath);
   };
 
   return (
@@ -75,7 +67,7 @@ export default function LoginPage() {
           <div className="mt-10 space-y-2.5 border-t border-white/15 pt-5 text-xs text-white/80">
             <div>• Phân quyền rõ ràng: Bán hàng, Kho, Quản lý</div>
             <div>• Cảnh báo tồn kho thấp &amp; nợ đến hạn tự động</div>
-            <div>• {BRAND_CONFIG.store.name} – {BRAND_CONFIG.store.address}</div>
+            <div>• Xác thực JWT &amp; đồng bộ trực tiếp PostgreSQL</div>
           </div>
         </div>
 
@@ -84,9 +76,7 @@ export default function LoginPage() {
           <div>
             <h2 className="text-xl font-bold text-zinc-900">Đăng nhập hệ thống</h2>
             <p className="mt-1 text-sm text-zinc-500">
-              {canSwitchRole
-                ? "Nhập thông tin tài khoản nhân viên hoặc chọn nhanh vai trò mẫu bên dưới."
-                : "Nhập tên đăng nhập (hoặc email) và mật khẩu được Quản lý cấp."}
+              Nhập tên đăng nhập (hoặc email) và mật khẩu do quản lý cấp.
             </p>
           </div>
 
@@ -148,48 +138,6 @@ export default function LoginPage() {
               {submitting ? "Đang xác thực..." : "Đăng nhập vào cửa hàng"}
             </button>
           </form>
-
-          {/* Demo Quick Access Roles – chỉ ở chế độ Mock (không dùng thay xác thực thật) */}
-          {canSwitchRole && (
-          <div className="mt-7 border-t border-[#E6E8E5] pt-6">
-            <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-              <KeyRound className="h-3.5 w-3.5" />
-              Đăng nhập nhanh theo vai trò (Dữ liệu mẫu)
-            </div>
-
-            <div className="mt-3 grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-              <button
-                type="button"
-                onClick={() => quickLogin("SALES", "/sales/pos")}
-                className="flex flex-col items-start rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] p-3 text-left transition-colors hover:border-[#2D6A4F] hover:bg-[#E8F3EE]/50"
-              >
-                <ShoppingBag className="h-4 w-4 text-[#2D6A4F]" />
-                <span className="mt-2 text-xs font-semibold text-zinc-900">NV Bán hàng</span>
-                <span className="text-[11px] text-zinc-500">thao.bh • Quầy POS</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => quickLogin("WAREHOUSE", "/inventory/books")}
-                className="flex flex-col items-start rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] p-3 text-left transition-colors hover:border-[#2D6A4F] hover:bg-[#E8F3EE]/50"
-              >
-                <Warehouse className="h-4 w-4 text-[#2D6A4F]" />
-                <span className="mt-2 text-xs font-semibold text-zinc-900">Nhân viên kho</span>
-                <span className="text-[11px] text-zinc-500">hoangnam.kho • Sách &amp; Kho</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => quickLogin("MANAGER", "/dashboard")}
-                className="flex flex-col items-start rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] p-3 text-left transition-colors hover:border-[#2D6A4F] hover:bg-[#E8F3EE]/50"
-              >
-                <ShieldCheck className="h-4 w-4 text-[#2D6A4F]" />
-                <span className="mt-2 text-xs font-semibold text-zinc-900">Quản lý</span>
-                <span className="text-[11px] text-zinc-500">minhanh.ql • Toàn quyền</span>
-              </button>
-            </div>
-          </div>
-          )}
         </div>
       </div>
     </div>

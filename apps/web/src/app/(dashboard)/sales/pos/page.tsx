@@ -17,7 +17,6 @@ import {
   X,
 } from "lucide-react";
 import { Badge, Modal } from "@/components/ui";
-import { shouldUseMock } from "@/config/api";
 import { BRAND_CONFIG } from "@/config/brand";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
@@ -95,7 +94,7 @@ export default function PosPage() {
   const [completedInvoice, setCompletedInvoice] = useState<Invoice | null>(null);
 
   // API thật cho bán hàng (cờ "sales"); đang gửi yêu cầu lập hóa đơn thì khóa nút.
-  const realSales = !shouldUseMock("sales");
+  const realSales = true;
   const [submitting, setSubmitting] = useState(false);
 
   const loadData = async () => {
