@@ -11,11 +11,12 @@ import type { UserRole } from "@/types";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, switchRole } = useAuth();
+  const { login, switchRole, canSwitchRole } = useAuth();
   const { showToast } = useToast();
 
-  const [identifier, setIdentifier] = useState("minhanh.ql");
-  const [password, setPassword] = useState("123456");
+  // Chỉ điền sẵn tài khoản mẫu ở chế độ Mock; xác thực thật thì để trống.
+  const [identifier, setIdentifier] = useState(canSwitchRole ? "minhanh.ql" : "");
+  const [password, setPassword] = useState(canSwitchRole ? "123456" : "");
   const [showPwd, setShowPwd] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -74,7 +75,7 @@ export default function LoginPage() {
           <div className="mt-10 space-y-2.5 border-t border-white/15 pt-5 text-xs text-white/80">
             <div>• Phân quyền rõ ràng: Bán hàng, Kho, Quản lý</div>
             <div>• Cảnh báo tồn kho thấp &amp; nợ đến hạn tự động</div>
-            <div>• Tầng dữ liệu tách biệt, sẵn sàng kết nối API</div>
+            <div>• {BRAND_CONFIG.store.name} – {BRAND_CONFIG.store.address}</div>
           </div>
         </div>
 
@@ -83,7 +84,9 @@ export default function LoginPage() {
           <div>
             <h2 className="text-xl font-bold text-zinc-900">Đăng nhập hệ thống</h2>
             <p className="mt-1 text-sm text-zinc-500">
-              Nhập thông tin tài khoản nhân viên hoặc chọn nhanh vai trò mẫu bên dưới.
+              {canSwitchRole
+                ? "Nhập thông tin tài khoản nhân viên hoặc chọn nhanh vai trò mẫu bên dưới."
+                : "Nhập tên đăng nhập (hoặc email) và mật khẩu được Quản lý cấp."}
             </p>
           </div>
 
@@ -146,7 +149,8 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Demo Quick Access Roles */}
+          {/* Demo Quick Access Roles – chỉ ở chế độ Mock (không dùng thay xác thực thật) */}
+          {canSwitchRole && (
           <div className="mt-7 border-t border-[#E6E8E5] pt-6">
             <div className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-zinc-400">
               <KeyRound className="h-3.5 w-3.5" />
@@ -185,6 +189,7 @@ export default function LoginPage() {
               </button>
             </div>
           </div>
+          )}
         </div>
       </div>
     </div>

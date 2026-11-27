@@ -1,3 +1,9 @@
+import { BRAND_CONFIG } from "@/config/brand";
+
+/** Tên tệp xuất luôn có tiền tố tên nhà sách. */
+const withBrand = (filename: string) =>
+  filename.startsWith(BRAND_CONFIG.fileSlug) ? filename : `${BRAND_CONFIG.fileSlug}_${filename}`;
+
 export function downloadCsv(
   filename: string,
   headers: string[],
@@ -22,7 +28,7 @@ export function downloadCsv(
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.setAttribute("download", filename.endsWith(".csv") ? filename : `${filename}.csv`);
+  link.setAttribute("download", withBrand(filename.endsWith(".csv") ? filename : `${filename}.csv`));
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -36,7 +42,7 @@ export function downloadJson(filename: string, data: unknown): void {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.setAttribute("download", filename.endsWith(".json") ? filename : `${filename}.json`);
+  link.setAttribute("download", withBrand(filename.endsWith(".json") ? filename : `${filename}.json`));
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

@@ -1,13 +1,14 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, RotateCcw, Search } from "lucide-react";
 import { Badge, Modal, PageHeader } from "@/components/ui";
+import { shouldUseMock } from "@/config/api";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
-import { formatCurrency, formatDateTime } from "@/lib/format";
+import { formatCurrency, formatDate, formatDateTime, todayIsoDate } from "@/lib/format";
 import { inventoryService, salesService } from "@/services";
-import type { Book, Invoice, ReturnOrder, ReturnType } from "@/types";
+import type { Book, Invoice, ReturnOrder, ReturnPreview, ReturnRequest, ReturnType } from "@/types";
 
 export default function ReturnsPage() {
   const { user } = useAuth();
@@ -29,6 +30,20 @@ export default function ReturnsPage() {
   const [reason, setReason] = useState("");
   const [exchangeBookId, setExchangeBookId] = useState("");
 
+  // API thật (cờ "returns"): tiền hoàn / khách bù lấy từ preview backend. Mock: tính tạm trên FE như cũ.
+  const realReturns = !shouldUseMock("returns");
+  const [submitting, setSubmitting] = useState(false);
+  // Khóa chống lập phiếu lặp: sinh khi mở form, giữ nguyên khi lỗi để thử lại an toàn.
+  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
+
+  /** Số cuốn còn được đổi/trả của một dòng hóa đơn. */
+  const remainingOf = (item: Invoice["items"][number]) => item.quantity - (item.returnedQuantity ?? 0);
+
+  /** Hóa đơn chọn được: API thật – còn hạn đổi/trả và còn sách chưa trả hết. */
+  const isReturnable = (inv: Invoice) =>
+    !realReturns ||
+    ((!inv.returnDeadline || inv.returnDeadline >= todayIsoDate()) && inv.items.some((it) => remainingOf(it) > 0));
+
   const loadAll = async () => {
     const [ret, inv, bk] = await Promise.all([
       salesService.getReturns(),
@@ -38,17 +53,26 @@ export default function ReturnsPage() {
     setReturns(ret);
     setInvoices(inv);
     setBooks(bk);
-    if (inv[0] && !selectedInvoiceId) {
-      setSelectedInvoiceId(inv[0].id);
-      if (inv[0].items[0]) setSelectedBookId(inv[0].items[0].bookId);
+    const firstReturnable = inv.find(isReturnable);
+    if (firstReturnable && !inv.some((i) => i.id === selectedInvoiceId && isReturnable(i))) {
+      setSelectedInvoiceId(firstReturnable.id);
+      const firstItem = firstReturnable.items.find((it) => remainingOf(it) > 0) ?? firstReturnable.items[0];
+      if (firstItem) setSelectedBookId(firstItem.bookId);
     }
-    if (bk[0] && !exchangeBookId) setExchangeBookId(bk[0].id);
+    const firstSellable = bk.find((b) => b.stock > 0 && b.status !== "DISCONTINUED");
+    if (firstSellable && !exchangeBookId) setExchangeBookId(firstSellable.id);
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const returnableInvoices = useMemo(() => invoices.filter(isReturnable), [invoices]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chosenInvoice = useMemo(
     () => invoices.find((i) => i.id === selectedInvoiceId),
@@ -65,10 +89,68 @@ export default function ReturnsPage() {
     [books, exchangeBookId],
   );
 
-  const returnVal = (chosenInvoiceItem?.unitPrice ?? 0) * returnQty;
-  const exchangeVal = returnType === "EXCHANGE" ? (chosenExchangeBook?.sellPrice ?? 0) * returnQty : 0;
-  const priceDiff = returnType === "EXCHANGE" ? exchangeVal - returnVal : 0;
-  const refundAmount = returnType === "RETURN" ? returnVal : priceDiff < 0 ? Math.abs(priceDiff) : 0;
+  // ───── Xem trước từ backend (API thật) ─────
+  const returnSignature = JSON.stringify({
+    invoiceId: chosenInvoice?.id ?? "",
+    type: returnType,
+    returnItems: chosenInvoiceItem ? [{ bookId: chosenInvoiceItem.bookId, quantity: returnQty, condition }] : [],
+    exchangeBookId: returnType === "EXCHANGE" ? exchangeBookId || undefined : undefined,
+  } satisfies ReturnRequest);
+
+  const [previewState, setPreviewState] = useState<{
+    signature: string;
+    data?: ReturnPreview;
+    error?: string;
+  } | null>(null);
+  const [previewNonce, setPreviewNonce] = useState(0);
+  const previewSeq = useRef(0);
+
+  useEffect(() => {
+    if (!realReturns || !createOpen) return;
+    const payload = JSON.parse(returnSignature) as ReturnRequest;
+    if (!payload.invoiceId || payload.returnItems.length === 0) return;
+    const seq = ++previewSeq.current;
+    // Đợi người dùng ngừng thao tác; response của yêu cầu cũ bị bỏ qua.
+    const timer = setTimeout(() => {
+      salesService
+        .previewReturn(payload)
+        .then((data) => {
+          if (seq === previewSeq.current) setPreviewState({ signature: returnSignature, data });
+        })
+        .catch((err) => {
+          if (seq === previewSeq.current) {
+            setPreviewState({
+              signature: returnSignature,
+              error: err instanceof Error ? err.message : "Không tính được tiền hoàn.",
+            });
+          }
+        });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [realReturns, createOpen, returnSignature, previewNonce]);
+
+  const preview = previewState?.signature === returnSignature ? previewState.data : undefined;
+  const previewError = previewState?.signature === returnSignature ? previewState.error : undefined;
+
+  // Mock: tính tạm như cũ (đơn giá gốc). API thật: số của backend.
+  const localReturnVal = (chosenInvoiceItem?.unitPrice ?? 0) * returnQty;
+  const localExchangeVal =
+    returnType === "EXCHANGE" ? (chosenExchangeBook?.sellPrice ?? 0) * returnQty : 0;
+  const returnVal = realReturns ? (preview?.returnedValue ?? 0) : localReturnVal;
+  const exchangeVal = realReturns ? (preview?.newBooksValue ?? 0) : localExchangeVal;
+  const priceDiff = realReturns
+    ? (preview?.extraPayment ?? 0) - (preview?.refundAmount ?? 0)
+    : returnType === "EXCHANGE"
+      ? localExchangeVal - localReturnVal
+      : 0;
+  const refundAmount = realReturns
+    ? (preview?.refundAmount ?? 0)
+    : returnType === "RETURN"
+      ? localReturnVal
+      : priceDiff < 0
+        ? Math.abs(priceDiff)
+        : 0;
+  const canSubmit = !submitting && !!chosenInvoiceItem && (!realReturns || preview?.valid === true);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -85,37 +167,53 @@ export default function ReturnsPage() {
 
   const handleCreateReturn = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!chosenInvoice || !chosenInvoiceItem) return;
+    if (!chosenInvoice || !chosenInvoiceItem || !canSubmit) return;
 
-    await salesService.createReturn({
-      invoiceId: chosenInvoice.id,
-      invoiceCode: chosenInvoice.code,
-      customerId: chosenInvoice.customerId,
-      customerName: chosenInvoice.customerName,
-      type: returnType,
-      reason: reason.trim() || condition,
-      returnItems: [
-        {
-          bookId: chosenInvoiceItem.bookId,
-          sku: chosenInvoiceItem.sku,
-          title: chosenInvoiceItem.title,
-          quantity: returnQty,
-          unitPrice: chosenInvoiceItem.unitPrice,
-          condition,
-        },
-      ],
-      exchangeBookId: returnType === "EXCHANGE" ? chosenExchangeBook?.id : undefined,
-      exchangeBookTitle: returnType === "EXCHANGE" ? chosenExchangeBook?.title : undefined,
-      exchangeQuantity: returnType === "EXCHANGE" ? returnQty : undefined,
-      exchangePriceDiff: priceDiff,
-      refundAmount,
-      handledBy: user?.fullName ?? "Nhân viên bán hàng",
-    });
+    setSubmitting(true);
+    try {
+      await salesService.createReturn({
+        invoiceId: chosenInvoice.id,
+        invoiceCode: chosenInvoice.code,
+        customerId: chosenInvoice.customerId,
+        customerName: chosenInvoice.customerName,
+        type: returnType,
+        reason: reason.trim() || condition,
+        returnItems: [
+          {
+            bookId: chosenInvoiceItem.bookId,
+            sku: chosenInvoiceItem.sku,
+            title: chosenInvoiceItem.title,
+            quantity: returnQty,
+            unitPrice: chosenInvoiceItem.unitPrice, // API thật bỏ qua – tính từ hóa đơn gốc
+            condition,
+          },
+        ],
+        exchangeBookId: returnType === "EXCHANGE" ? chosenExchangeBook?.id : undefined,
+        exchangeBookTitle: returnType === "EXCHANGE" ? chosenExchangeBook?.title : undefined,
+        exchangeQuantity: returnType === "EXCHANGE" ? returnQty : undefined,
+        exchangePriceDiff: priceDiff,
+        refundAmount,
+        handledBy: user?.fullName ?? "Nhân viên bán hàng",
+        requestKey,
+        expectedRefundAmount: realReturns ? preview?.refundAmount : undefined,
+        expectedExtraPayment: realReturns ? preview?.extraPayment : undefined,
+      });
+    } catch (err) {
+      // Giữ form + requestKey để sửa / thử lại; tính lại preview (số còn được trả có thể vừa đổi).
+      showToast(err instanceof Error ? err.message : "Không lập được phiếu đổi/trả.", "error");
+      setPreviewState(null);
+      setPreviewNonce((n) => n + 1);
+      return;
+    } finally {
+      setSubmitting(false);
+    }
 
-    await loadAll();
+    // Thành công: tải lại phiếu, hóa đơn (số đã trả, trạng thái), tồn kho; phiếu sau dùng khóa mới.
     setCreateOpen(false);
     setReason("");
+    setRequestKey(crypto.randomUUID());
     showToast("Đã lập phiếu xử lý đổi / trả hàng thành công!");
+    loadAll().catch(() => showToast("Đã lập phiếu nhưng chưa tải lại được dữ liệu, hãy tải lại trang.", "warning"));
   };
 
   return (
@@ -239,14 +337,17 @@ export default function ReturnsPage() {
                 onChange={(e) => {
                   setSelectedInvoiceId(e.target.value);
                   const inv = invoices.find((x) => x.id === e.target.value);
-                  if (inv?.items[0]) setSelectedBookId(inv.items[0].bookId);
+                  const firstItem = inv?.items.find((it) => remainingOf(it) > 0) ?? inv?.items[0];
+                  if (firstItem) setSelectedBookId(firstItem.bookId);
                   setReturnQty(1);
                 }}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2 text-sm"
               >
-                {invoices.map((inv) => (
+                {/* API thật: chỉ hóa đơn còn hạn 7 ngày và còn sách chưa trả hết */}
+                {returnableInvoices.map((inv) => (
                   <option key={inv.id} value={inv.id}>
                     {inv.code} — {inv.customerName}
+                    {inv.returnDeadline ? ` (hạn đến ${formatDate(inv.returnDeadline)})` : ""}
                   </option>
                 ))}
               </select>
@@ -276,8 +377,10 @@ export default function ReturnsPage() {
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2 text-sm"
               >
                 {chosenInvoice?.items.map((it) => (
-                  <option key={it.bookId} value={it.bookId}>
-                    {it.title} (Đã mua: {it.quantity} • {formatCurrency(it.unitPrice)})
+                  <option key={it.bookId} value={it.bookId} disabled={remainingOf(it) <= 0}>
+                    {it.title} (Đã mua: {it.quantity}
+                    {it.returnedQuantity ? ` • đã trả ${it.returnedQuantity}` : ""} •{" "}
+                    {formatCurrency(it.unitPrice)})
                   </option>
                 ))}
               </select>
@@ -288,7 +391,7 @@ export default function ReturnsPage() {
               <input
                 type="number"
                 min={1}
-                max={chosenInvoiceItem?.quantity ?? 1}
+                max={chosenInvoiceItem ? Math.max(1, remainingOf(chosenInvoiceItem)) : 1}
                 value={returnQty}
                 onChange={(e) => setReturnQty(Math.max(1, Number(e.target.value)))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2 text-sm"
@@ -307,7 +410,7 @@ export default function ReturnsPage() {
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2 text-sm"
               >
                 {books
-                  .filter((b) => b.stock > 0)
+                  .filter((b) => b.stock > 0 && b.status !== "DISCONTINUED")
                   .map((b) => (
                     <option key={b.id} value={b.id}>
                       {b.title} — Giá: {formatCurrency(b.sellPrice)} (Tồn: {b.stock})
@@ -341,7 +444,9 @@ export default function ReturnsPage() {
 
           <div className="rounded-xl bg-[#F7F8F6] p-4 text-xs space-y-1.5">
             <div className="flex justify-between">
-              <span className="text-zinc-500">Giá trị sách trả lại:</span>
+              <span className="text-zinc-500">
+                Giá trị sách trả lại{realReturns ? " (theo giá thực trả trên hóa đơn gốc)" : ""}:
+              </span>
               <span className="font-semibold">{formatCurrency(returnVal)}</span>
             </div>
             {returnType === "EXCHANGE" && (
@@ -364,6 +469,14 @@ export default function ReturnsPage() {
             </div>
           </div>
 
+          {/* Lý do chưa lập phiếu được (từ backend): quá hạn, trả vượt, sách đổi hết tồn… */}
+          {realReturns && (previewError || (preview && preview.messages.length > 0)) && (
+            <ul className="space-y-1 rounded-xl border border-[#FECACA] bg-[#FEE2E2] px-3 py-2 text-xs text-[#B91C1C]">
+              {previewError && <li>{previewError}</li>}
+              {preview?.messages.map((m) => <li key={m}>{m}</li>)}
+            </ul>
+          )}
+
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -374,10 +487,11 @@ export default function ReturnsPage() {
             </button>
             <button
               type="submit"
-              className="inline-flex items-center gap-1.5 rounded-xl bg-[#2D6A4F] px-4 py-2 text-sm font-semibold text-white hover:bg-[#23533D]"
+              disabled={!canSubmit}
+              className="inline-flex items-center gap-1.5 rounded-xl bg-[#2D6A4F] px-4 py-2 text-sm font-semibold text-white hover:bg-[#23533D] disabled:cursor-not-allowed disabled:opacity-60"
             >
               <RotateCcw className="h-4 w-4" />
-              Xác nhận lập phiếu
+              {submitting ? "Đang lập phiếu…" : "Xác nhận lập phiếu"}
             </button>
           </div>
         </form>

@@ -33,30 +33,36 @@ export function StatCard({
   label,
   value,
   trendText,
+  trendTone = "up",
   subText,
   icon,
   iconBg = "bg-[#E8F3EE] text-[#2D6A4F]",
-  sparkline = [20, 32, 28, 45, 40, 56, 52, 68],
+  sparkline,
   sparkColor = "#2D6A4F",
 }: {
   label: string;
   value: string;
   trendText?: string;
+  /** Chiều thay đổi so kỳ trước – quyết định mũi tên và màu. */
+  trendTone?: "up" | "down" | "flat";
   subText?: string;
   icon: React.ReactNode;
   iconBg?: string;
-  sparkline?: number[];
+  /** Giá trị thật theo ngày; không truyền / ít hơn 2 điểm thì không vẽ. */
+  sparkline?: number[] | null;
   sparkColor?: string;
 }) {
-  const min = Math.min(...sparkline);
-  const max = Math.max(...sparkline);
+  const hasSpark = Boolean(sparkline && sparkline.length >= 2);
+  const values = hasSpark ? (sparkline as number[]) : [0, 0];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
   const span = max - min || 1;
   const width = 108;
   const height = 34;
 
-  const points = sparkline
+  const points = values
     .map((val, idx) => {
-      const x = (idx / Math.max(1, sparkline.length - 1)) * width;
+      const x = (idx / Math.max(1, values.length - 1)) * width;
       const y = height - ((val - min) / span) * (height - 8) - 4;
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     })
@@ -76,10 +82,17 @@ export function StatCard({
       <div className="mt-5 flex items-end justify-between gap-3">
         <div>
           {trendText && (
-            <div className="text-xs font-semibold text-[#2D6A4F]">↗ {trendText}</div>
+            <div
+              className={`text-xs font-semibold ${
+                trendTone === "up" ? "text-[#2D6A4F]" : trendTone === "down" ? "text-[#B91C1C]" : "text-zinc-500"
+              }`}
+            >
+              {trendTone === "up" ? "↗" : trendTone === "down" ? "↘" : "→"} {trendText}
+            </div>
           )}
           {subText && <div className="mt-0.5 text-xs text-zinc-400">{subText}</div>}
         </div>
+        {hasSpark && (
         <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="shrink-0">
           <polyline
             fill="none"
@@ -90,6 +103,7 @@ export function StatCard({
             points={points}
           />
         </svg>
+        )}
       </div>
     </div>
   );

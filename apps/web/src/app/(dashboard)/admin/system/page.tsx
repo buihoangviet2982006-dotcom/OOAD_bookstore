@@ -1,17 +1,7 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
-import {
-  DatabaseBackup,
-  Download,
-  KeyRound,
-  Lock,
-  Plus,
-  RotateCcw,
-  Save,
-  Unlock,
-  Upload,
-} from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Check, DatabaseBackup, Download, KeyRound, Lock, Minus, Plus, Unlock, Upload } from "lucide-react";
 import { Badge, Modal, PageHeader } from "@/components/ui";
 import { ROLE_LABELS } from "@/config/navigation";
 import { useAuth } from "@/context/AuthContext";
@@ -19,7 +9,10 @@ import { useToast } from "@/context/ToastContext";
 import { downloadJson } from "@/lib/export";
 import { formatDateTime } from "@/lib/format";
 import { adminService } from "@/services";
-import type { BackupRecord, RolePermissionItem, SystemAccount, UserRole } from "@/types";
+import type { BackupRecord, Employee, RolePermissionItem, SystemAccount, UserRole } from "@/types";
+
+const errorMessage = (err: unknown) => (err instanceof Error ? err.message : "Đã có lỗi xảy ra.");
+const INPUT = "mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2";
 
 export default function SystemAdminPage() {
   const { user } = useAuth();
@@ -27,188 +20,179 @@ export default function SystemAdminPage() {
 
   const [tab, setTab] = useState<"ACCOUNTS" | "RBAC" | "BACKUP">("ACCOUNTS");
   const [accounts, setAccounts] = useState<SystemAccount[]>([]);
+  const [employees, setEmployees] = useState<Employee[]>([]);
   const [permissions, setPermissions] = useState<RolePermissionItem[]>([]);
   const [backups, setBackups] = useState<BackupRecord[]>([]);
+  const [busy, setBusy] = useState(false);
 
-  // Create/Edit Account Modal
+  // Tạo / sửa tài khoản
   const [accModalOpen, setAccModalOpen] = useState(false);
   const [editingAcc, setEditingAcc] = useState<SystemAccount | null>(null);
+  const [employeeId, setEmployeeId] = useState("");
   const [username, setUsername] = useState("");
-  const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<UserRole>("SALES");
+  const [initialPassword, setInitialPassword] = useState("");
 
-  // Reset Password Modal
+  // Đặt lại mật khẩu
   const [resetTarget, setResetTarget] = useState<SystemAccount | null>(null);
-  const [tempPassword, setTempPassword] = useState("MocBooks@2026");
+  const [newPassword, setNewPassword] = useState("");
 
-  // Backup note
   const [backupNote, setBackupNote] = useState("");
 
   const loadAll = async () => {
-    const [acc, perm, bkp] = await Promise.all([
-      adminService.getAccounts(),
-      adminService.getPermissions(),
-      adminService.getBackups(),
-    ]);
-    setAccounts(acc);
-    setPermissions(perm);
-    setBackups(bkp);
+    try {
+      const [acc, emp, perm, bkp] = await Promise.all([
+        adminService.getAccounts(),
+        adminService.getEmployees(),
+        adminService.getPermissions(),
+        adminService.getBackups(),
+      ]);
+      setAccounts(acc);
+      setEmployees(emp);
+      setPermissions(perm);
+      setBackups(bkp);
+    } catch (err) {
+      showToast(errorMessage(err), "error");
+    }
   };
 
   useEffect(() => {
     void Promise.resolve().then(() => loadAll());
+    // Chỉ tải một lần khi mở trang; các thao tác tự gọi loadAll sau khi lưu.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  /** Nhân viên được cấp tài khoản: chưa có tài khoản và chưa thôi việc. */
+  const employeesWithoutAccount = useMemo(() => {
+    const owners = new Set(accounts.map((a) => a.employeeId));
+    return employees.filter((e) => !owners.has(e.id) && e.status !== "RESIGNED");
+  }, [accounts, employees]);
+
   const openCreateAccount = () => {
+    const first = employeesWithoutAccount[0];
     setEditingAcc(null);
+    setEmployeeId(first?.id ?? "");
     setUsername("");
-    setFullName("");
     setEmail("");
-    setRole("SALES");
+    setRole(first?.role ?? "SALES");
+    setInitialPassword("");
     setAccModalOpen(true);
   };
 
   const openEditAccount = (acc: SystemAccount) => {
     setEditingAcc(acc);
+    setEmployeeId(acc.employeeId);
     setUsername(acc.username);
-    setFullName(acc.fullName);
     setEmail(acc.email);
     setRole(acc.role);
     setAccModalOpen(true);
   };
 
+  const run = async (action: () => Promise<string>) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const message = await action();
+      await loadAll();
+      showToast(message);
+      return true;
+    } catch (err) {
+      showToast(errorMessage(err), "error");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleSaveAccount = async (e: React.FormEvent) => {
     e.preventDefault();
-    await adminService.saveAccount({
-      id: editingAcc?.id,
-      username,
-      employeeId: editingAcc?.employeeId ?? `EMP-${Date.now()}`,
-      fullName,
-      email,
-      role,
-      status: editingAcc?.status ?? "ACTIVE",
-    });
-    await loadAll();
-    setAccModalOpen(false);
-    showToast(editingAcc ? "Đã cập nhật tài khoản" : "Đã cấp tài khoản đăng nhập mới");
-  };
-
-  const togglePermission = (
-    moduleKey: string,
-    roleKey: UserRole,
-    field: keyof RolePermissionItem["permissions"]["MANAGER"],
-  ) => {
-    setPermissions((prev) =>
-      prev.map((item) => {
-        if (item.moduleKey !== moduleKey) return item;
-        return {
-          ...item,
-          permissions: {
-            ...item.permissions,
-            [roleKey]: {
-              ...item.permissions[roleKey],
-              [field]: !item.permissions[roleKey][field],
-            },
-          },
-        };
-      }),
-    );
-  };
-
-  const handleSavePermissions = async () => {
-    await adminService.savePermissions(permissions);
-    showToast("Đã lưu cấu hình phân quyền người dùng!");
-  };
-
-  const handleCreateBackup = async () => {
-    const { record, snapshot } = await adminService.createBackup(
-      user?.fullName ?? "Quản trị viên",
-      backupNote,
-    );
-    downloadJson(record.fileName, snapshot);
-    setBackupNote("");
-    await loadAll();
-    showToast(`Đã tạo bản sao lưu ${record.fileName} và tải về máy!`);
-  };
-
-  const handleRestoreFromFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async () => {
-      try {
-        const parsed = JSON.parse(String(reader.result));
-        await adminService.restoreBackup(parsed);
-        await loadAll();
-        showToast(`Đã phục hồi dữ liệu từ tệp ${file.name} thành công!`);
-      } catch {
-        showToast("Tệp sao lưu không đúng định dạng JSON hợp lệ.", "error");
+    const ok = await run(async () => {
+      if (editingAcc) {
+        await adminService.updateAccount(editingAcc.id, { username, email, role });
+        return editingAcc.role !== role
+          ? `Đã cập nhật ${username}. Vai trò thay đổi – tài khoản này cần đăng nhập lại.`
+          : `Đã cập nhật tài khoản ${username}`;
       }
-    };
-    reader.readAsText(file);
+      await adminService.createAccount({
+        employeeId,
+        username,
+        email: email.trim() || undefined,
+        role,
+        password: initialPassword,
+      });
+      return `Đã cấp tài khoản ${username.toLowerCase()}`;
+    });
+    if (ok) setAccModalOpen(false);
   };
+
+  const handleToggleLock = (acc: SystemAccount) =>
+    run(async () => {
+      const locking = acc.status === "ACTIVE";
+      await adminService.setAccountLocked(acc.id, locking);
+      return locking
+        ? `Đã khóa ${acc.username}; các phiên đăng nhập của tài khoản đã kết thúc.`
+        : `Đã mở khóa ${acc.username}. Người dùng cần đăng nhập lại.`;
+    });
+
+  const handleResetPassword = async () => {
+    if (!resetTarget) return;
+    const target = resetTarget;
+    const ok = await run(() => adminService.resetAccountPassword(target.id, newPassword));
+    if (ok) {
+      setResetTarget(null);
+      setNewPassword("");
+    }
+  };
+
+  const handleCreateBackup = () =>
+    run(async () => {
+      const { record, snapshot } = await adminService.createBackup(backupNote.trim() || undefined);
+      downloadJson(record.fileName, snapshot);
+      setBackupNote("");
+      return `Đã xuất ${record.fileName} và ghi vào lịch sử sao lưu.`;
+    });
+
+  const tabButton = (key: typeof tab, label: string) => (
+    <button
+      type="button"
+      onClick={() => setTab(key)}
+      className={`rounded-lg px-4 py-2 text-xs font-semibold ${
+        tab === key ? "bg-[#E8F3EE] text-[#2D6A4F]" : "text-zinc-600"
+      }`}
+    >
+      {label}
+    </button>
+  );
 
   return (
     <div>
       <PageHeader
         title="Quản lý hệ thống &amp; Bảo mật"
-        subtitle="Quản trị tài khoản đăng nhập, ma trận phân quyền người dùng và sao lưu - phục hồi dữ liệu"
+        subtitle="Tài khoản đăng nhập, ma trận phân quyền (chỉ xem) và sao lưu dữ liệu dạng JSON"
         actions={
           tab === "ACCOUNTS" ? (
             <button
               type="button"
               onClick={openCreateAccount}
-              className="inline-flex items-center gap-2 rounded-xl bg-[#2D6A4F] px-4 py-2 text-sm font-semibold text-white hover:bg-[#23533D]"
+              disabled={employeesWithoutAccount.length === 0}
+              title={employeesWithoutAccount.length === 0 ? "Mọi nhân viên đang làm việc đều đã có tài khoản" : undefined}
+              className="inline-flex items-center gap-2 rounded-xl bg-[#2D6A4F] px-4 py-2 text-sm font-semibold text-white hover:bg-[#23533D] disabled:opacity-50"
             >
               <Plus className="h-4 w-4" />
-              Thêm tài khoản
-            </button>
-          ) : tab === "RBAC" ? (
-            <button
-              type="button"
-              onClick={handleSavePermissions}
-              className="inline-flex items-center gap-2 rounded-xl bg-[#2D6A4F] px-4 py-2 text-sm font-semibold text-white hover:bg-[#23533D]"
-            >
-              <Save className="h-4 w-4" />
-              Lưu phân quyền
+              Cấp tài khoản
             </button>
           ) : null
         }
       />
 
-      {/* Tabs */}
       <div className="mb-6 inline-flex flex-wrap rounded-xl border border-[#E6E8E5] bg-white p-1">
-        <button
-          type="button"
-          onClick={() => setTab("ACCOUNTS")}
-          className={`rounded-lg px-4 py-2 text-xs font-semibold ${
-            tab === "ACCOUNTS" ? "bg-[#E8F3EE] text-[#2D6A4F]" : "text-zinc-600"
-          }`}
-        >
-          Tài khoản người dùng ({accounts.length})
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("RBAC")}
-          className={`rounded-lg px-4 py-2 text-xs font-semibold ${
-            tab === "RBAC" ? "bg-[#E8F3EE] text-[#2D6A4F]" : "text-zinc-600"
-          }`}
-        >
-          Phân quyền theo vai trò
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab("BACKUP")}
-          className={`rounded-lg px-4 py-2 text-xs font-semibold ${
-            tab === "BACKUP" ? "bg-[#E8F3EE] text-[#2D6A4F]" : "text-zinc-600"
-          }`}
-        >
-          Sao lưu &amp; Phục hồi dữ liệu
-        </button>
+        {tabButton("ACCOUNTS", `Tài khoản người dùng (${accounts.length})`)}
+        {tabButton("RBAC", "Phân quyền theo vai trò")}
+        {tabButton("BACKUP", "Sao lưu dữ liệu")}
       </div>
 
-      {/* Tab 1: Accounts */}
+      {/* Tab 1: Tài khoản */}
       {tab === "ACCOUNTS" && (
         <div className="overflow-hidden rounded-2xl border border-[#E6E8E5] bg-white">
           <table className="w-full text-left text-sm">
@@ -223,90 +207,97 @@ export default function SystemAdminPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-[#E6E8E5]">
-              {accounts.map((acc) => (
-                <tr key={acc.id} className="hover:bg-[#F7F8F6]/70">
-                  <td className="px-5 py-3.5 font-mono text-xs font-bold text-[#2D6A4F]">
-                    {acc.username}
-                  </td>
-                  <td className="px-5 py-3.5">
-                    <div className="font-semibold text-zinc-900">{acc.fullName}</div>
-                    <div className="text-xs text-zinc-500">{acc.email}</div>
-                  </td>
-                  <td className="px-5 py-3.5">
-                    <Badge variant="blue">{ROLE_LABELS[acc.role]}</Badge>
-                  </td>
-                  <td className="px-5 py-3.5 text-xs text-zinc-500">
-                    {formatDateTime(acc.lastLogin)}
-                  </td>
-                  <td className="px-5 py-3.5 text-center">
-                    {acc.status === "ACTIVE" ? (
-                      <Badge variant="sage">Hoạt động</Badge>
-                    ) : (
-                      <Badge variant="crimson">Đã khóa</Badge>
-                    )}
-                  </td>
-                  <td className="px-5 py-3.5 text-right">
-                    <div className="inline-flex flex-wrap justify-end gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() => openEditAccount(acc)}
-                        className="rounded-lg border border-[#E6E8E5] px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
-                      >
-                        Sửa
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setResetTarget(acc)}
-                        className="inline-flex items-center gap-1 rounded-lg border border-[#E6E8E5] px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
-                      >
-                        <KeyRound className="h-3.5 w-3.5" /> Đặt lại MK
-                      </button>
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          await adminService.toggleAccountStatus(acc.id);
-                          await loadAll();
-                          showToast(
-                            acc.status === "ACTIVE"
-                              ? `Đã khóa tài khoản ${acc.username}`
-                              : `Đã mở khóa tài khoản ${acc.username}`,
-                            "info",
-                          );
-                        }}
-                        className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium ${
-                          acc.status === "ACTIVE"
-                            ? "border-[#FECACA] text-[#B91C1C] hover:bg-[#FEE2E2]"
-                            : "border-[#CBE4D7] text-[#2D6A4F] hover:bg-[#E8F3EE]"
-                        }`}
-                      >
-                        {acc.status === "ACTIVE" ? (
-                          <>
-                            <Lock className="h-3.5 w-3.5" /> Khóa
-                          </>
-                        ) : (
-                          <>
-                            <Unlock className="h-3.5 w-3.5" /> Mở khóa
-                          </>
+              {accounts.map((acc) => {
+                const isSelf = acc.id === user?.id;
+                const resigned = acc.employeeStatus === "RESIGNED";
+                return (
+                  <tr key={acc.id} className="hover:bg-[#F7F8F6]/70">
+                    <td className="px-5 py-3.5 font-mono text-xs font-bold text-[#2D6A4F]">
+                      {acc.username}
+                      {isSelf && <span className="ml-1 font-sans font-normal text-zinc-400">(bạn)</span>}
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <div className="font-semibold text-zinc-900">
+                        {acc.fullName} <span className="text-xs font-normal text-zinc-400">{acc.employeeId}</span>
+                      </div>
+                      <div className="text-xs text-zinc-500">{acc.email}</div>
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <Badge variant="blue">{ROLE_LABELS[acc.role]}</Badge>
+                    </td>
+                    <td className="px-5 py-3.5 text-xs text-zinc-500">{formatDateTime(acc.lastLogin)}</td>
+                    <td className="px-5 py-3.5 text-center">
+                      {acc.status === "ACTIVE" ? (
+                        <Badge variant="sage">Hoạt động</Badge>
+                      ) : (
+                        <Badge variant="crimson">Đã khóa</Badge>
+                      )}
+                      {resigned && <div className="mt-1 text-xs text-zinc-400">NV đã thôi việc</div>}
+                      {!resigned && (acc.failedLoginCount ?? 0) > 0 && (
+                        <div className="mt-1 text-xs text-zinc-400">Sai mật khẩu {acc.failedLoginCount} lần</div>
+                      )}
+                    </td>
+                    <td className="px-5 py-3.5 text-right">
+                      <div className="inline-flex flex-wrap justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => openEditAccount(acc)}
+                          className="rounded-lg border border-[#E6E8E5] px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
+                        >
+                          Sửa
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setNewPassword("");
+                            setResetTarget(acc);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-[#E6E8E5] px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
+                        >
+                          <KeyRound className="h-3.5 w-3.5" /> Đặt lại MK
+                        </button>
+                        {!isSelf && !(resigned && acc.status === "LOCKED") && (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void handleToggleLock(acc)}
+                            className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1 text-xs font-medium disabled:opacity-50 ${
+                              acc.status === "ACTIVE"
+                                ? "border-[#FECACA] text-[#B91C1C] hover:bg-[#FEE2E2]"
+                                : "border-[#CBE4D7] text-[#2D6A4F] hover:bg-[#E8F3EE]"
+                            }`}
+                          >
+                            {acc.status === "ACTIVE" ? (
+                              <>
+                                <Lock className="h-3.5 w-3.5" /> Khóa
+                              </>
+                            ) : (
+                              <>
+                                <Unlock className="h-3.5 w-3.5" /> Mở khóa
+                              </>
+                            )}
+                          </button>
                         )}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Tab 2: RBAC Matrix */}
+      {/* Tab 2: Ma trận quyền – chỉ xem */}
       {tab === "RBAC" && (
         <div className="space-y-4">
+          <div className="rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] px-4 py-3 text-xs text-zinc-600">
+            Phân quyền cố định theo 3 vai trò và được kiểm tra ở máy chủ. Bảng này chỉ để xem, không chỉnh sửa
+            được. Thao tác đánh dấu “—” cho mọi vai trò là chức năng không có trong hệ thống (ví dụ sửa/xóa hóa đơn).
+          </div>
           {(["SALES", "WAREHOUSE", "MANAGER"] as UserRole[]).map((roleKey) => (
-            <div
-              key={roleKey}
-              className="overflow-hidden rounded-2xl border border-[#E6E8E5] bg-white"
-            >
-              <div className="border-b border-[#E6E8E5] bg-[#F7F8F6] px-5 py-3 font-semibold text-sm text-zinc-900">
+            <div key={roleKey} className="overflow-hidden rounded-2xl border border-[#E6E8E5] bg-white">
+              <div className="border-b border-[#E6E8E5] bg-[#F7F8F6] px-5 py-3 text-sm font-semibold text-zinc-900">
                 Vai trò: <span className="text-[#2D6A4F]">{ROLE_LABELS[roleKey]}</span>
               </div>
               <table className="w-full text-left text-xs">
@@ -317,7 +308,7 @@ export default function SystemAdminPage() {
                     <th className="px-3 py-2.5 text-center">Thêm mới</th>
                     <th className="px-3 py-2.5 text-center">Chỉnh sửa</th>
                     <th className="px-3 py-2.5 text-center">Xóa</th>
-                    <th className="px-3 py-2.5 text-center">Xuất BC</th>
+                    <th className="px-5 py-2.5">Ghi chú</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E6E8E5]">
@@ -325,19 +316,17 @@ export default function SystemAdminPage() {
                     const p = perm.permissions[roleKey];
                     return (
                       <tr key={perm.moduleKey}>
-                        <td className="px-5 py-2.5 font-medium text-zinc-800">
-                          {perm.moduleName}
-                        </td>
-                        {(["view", "create", "edit", "delete", "export"] as const).map((field) => (
+                        <td className="px-5 py-2.5 font-medium text-zinc-800">{perm.moduleName}</td>
+                        {(["view", "create", "edit", "delete"] as const).map((field) => (
                           <td key={field} className="px-3 py-2.5 text-center">
-                            <input
-                              type="checkbox"
-                              checked={p[field]}
-                              onChange={() => togglePermission(perm.moduleKey, roleKey, field)}
-                              className="h-4 w-4 accent-[#2D6A4F] cursor-pointer"
-                            />
+                            {p[field] ? (
+                              <Check className="mx-auto h-4 w-4 text-[#2D6A4F]" aria-label="Được phép" />
+                            ) : (
+                              <Minus className="mx-auto h-4 w-4 text-zinc-300" aria-label="Không" />
+                            )}
                           </td>
                         ))}
+                        <td className="px-5 py-2.5 text-zinc-500">{p.view ? (perm.note ?? "") : ""}</td>
                       </tr>
                     );
                   })}
@@ -348,21 +337,20 @@ export default function SystemAdminPage() {
         </div>
       )}
 
-      {/* Tab 3: Backup & Restore */}
+      {/* Tab 3: Sao lưu (xuất JSON) */}
       {tab === "BACKUP" && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
-            <div className="rounded-2xl border border-[#E6E8E5] bg-white p-6 space-y-4">
+            <div className="space-y-4 rounded-2xl border border-[#E6E8E5] bg-white p-6">
               <div className="flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#E8F3EE] text-[#2D6A4F]">
                   <DatabaseBackup className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-zinc-900">
-                    Sao lưu dữ liệu (Backup)
-                  </h3>
+                  <h3 className="text-base font-semibold text-zinc-900">Xuất dữ liệu (JSON)</h3>
                   <p className="text-xs text-zinc-500">
-                    Xuất toàn bộ dữ liệu hiện tại thành tệp an toàn và lưu vào lịch sử hệ thống
+                    Xuất dữ liệu nghiệp vụ hiện tại (sách, khách hàng, nhân viên, hóa đơn, đổi/trả, nhập hàng,
+                    kiểm kê…) và ghi vào lịch sử. Không chứa mật khẩu, mã OTP hay phiên đăng nhập.
                   </p>
                 </div>
               </div>
@@ -371,94 +359,75 @@ export default function SystemAdminPage() {
                 type="text"
                 value={backupNote}
                 onChange={(e) => setBackupNote(e.target.value)}
-                placeholder="Ghi chú bản sao lưu (VD: Trước khi cập nhật giá sách quý 4)..."
+                placeholder="Ghi chú (VD: Trước khi cập nhật giá sách quý 4)..."
                 className="w-full rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] px-3.5 py-2 text-sm focus:border-[#2D6A4F] focus:bg-white focus:outline-none"
               />
 
               <button
                 type="button"
-                onClick={handleCreateBackup}
-                className="inline-flex items-center gap-2 rounded-xl bg-[#2D6A4F] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#23533D]"
+                disabled={busy}
+                onClick={() => void handleCreateBackup()}
+                className="inline-flex items-center gap-2 rounded-xl bg-[#2D6A4F] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#23533D] disabled:opacity-50"
               >
                 <Download className="h-4 w-4" />
-                Tạo bản sao lưu &amp; Tải xuống ngay
+                Xuất JSON &amp; tải xuống
               </button>
             </div>
 
-            <div className="rounded-2xl border border-[#E6E8E5] bg-white p-6 space-y-4">
+            <div className="space-y-4 rounded-2xl border border-dashed border-[#E6E8E5] bg-[#F7F8F6] p-6">
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#FEF3C7] text-[#B45309]">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-zinc-200 text-zinc-500">
                   <Upload className="h-5 w-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-semibold text-zinc-900">
-                    Phục hồi dữ liệu từ tệp (Restore)
-                  </h3>
+                  <h3 className="text-base font-semibold text-zinc-500">Phục hồi dữ liệu – chưa hỗ trợ</h3>
                   <p className="text-xs text-zinc-500">
-                    Khôi phục trạng thái cửa hàng từ tệp JSON sao lưu đã tải xuống trước đó
+                    Phục hồi nằm ngoài phạm vi bản demo. Tệp JSON dùng để lưu trữ và đối chiếu, không nạp ngược
+                    vào hệ thống. Khôi phục cơ sở dữ liệu cần thực hiện bởi quản trị kỹ thuật.
                   </p>
                 </div>
               </div>
-
-              <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-[#2D6A4F] bg-[#F7F8F6] py-5 text-xs font-medium text-[#2D6A4F] hover:bg-[#E8F3EE]/50">
-                <span>Nhấn để chọn tệp sao lưu (.json) từ máy tính</span>
-                <input
-                  type="file"
-                  accept=".json"
-                  onChange={handleRestoreFromFile}
-                  className="hidden"
-                />
-              </label>
+              <button
+                type="button"
+                disabled
+                className="inline-flex cursor-not-allowed items-center gap-2 rounded-xl border border-[#E6E8E5] bg-white px-4 py-2.5 text-sm font-medium text-zinc-400"
+              >
+                <Upload className="h-4 w-4" />
+                Phục hồi từ tệp (không khả dụng)
+              </button>
             </div>
           </div>
 
           <div className="overflow-hidden rounded-2xl border border-[#E6E8E5] bg-white">
-            <div className="border-b border-[#E6E8E5] px-5 py-3.5 font-semibold text-sm text-zinc-900">
-              Lịch sử các bản sao lưu ({backups.length})
+            <div className="border-b border-[#E6E8E5] px-5 py-3.5 text-sm font-semibold text-zinc-900">
+              Lịch sử xuất dữ liệu ({backups.length})
             </div>
             <table className="w-full text-left text-sm">
               <thead className="border-b border-[#E6E8E5] bg-[#F7F8F6] text-xs font-semibold uppercase text-zinc-500">
                 <tr>
-                  <th className="px-5 py-3">Tên tệp sao lưu</th>
+                  <th className="px-5 py-3">Tên tệp</th>
                   <th className="px-5 py-3">Thời gian</th>
                   <th className="px-5 py-3">Người thực hiện</th>
                   <th className="px-5 py-3">Dung lượng</th>
-                  <th className="px-5 py-3 text-right">Khôi phục</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E6E8E5]">
+                {backups.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-5 py-6 text-center text-xs text-zinc-400">
+                      Chưa có lần xuất dữ liệu nào.
+                    </td>
+                  </tr>
+                )}
                 {backups.map((b) => (
                   <tr key={b.id}>
                     <td className="px-5 py-3">
-                      <div className="font-mono text-xs font-semibold text-zinc-900">
-                        {b.fileName}
-                      </div>
+                      <div className="font-mono text-xs font-semibold text-zinc-900">{b.fileName}</div>
                       <div className="text-xs text-zinc-400">{b.note}</div>
                     </td>
-                    <td className="px-5 py-3 text-xs text-zinc-600">
-                      {formatDateTime(b.createdAt)}
-                    </td>
+                    <td className="px-5 py-3 text-xs text-zinc-600">{formatDateTime(b.createdAt)}</td>
                     <td className="px-5 py-3 text-xs text-zinc-600">{b.createdBy}</td>
-                    <td className="px-5 py-3 text-xs font-mono">{b.sizeLabel}</td>
-                    <td className="px-5 py-3 text-right">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          if (
-                            !window.confirm(
-                              `Xác nhận phục hồi dữ liệu hệ thống về bản sao lưu "${b.fileName}"?`,
-                            )
-                          )
-                            return;
-                          await adminService.restoreBackup(b.id);
-                          await loadAll();
-                          showToast(`Đã phục hồi dữ liệu từ bản sao lưu ${b.fileName}!`);
-                        }}
-                        className="inline-flex items-center gap-1 rounded-lg border border-[#E6E8E5] px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" /> Phục hồi bản này
-                      </button>
-                    </td>
+                    <td className="px-5 py-3 font-mono text-xs">{b.sizeLabel}</td>
                   </tr>
                 ))}
               </tbody>
@@ -467,13 +436,40 @@ export default function SystemAdminPage() {
         </div>
       )}
 
-      {/* Account Create / Edit Modal */}
+      {/* Cấp / sửa tài khoản */}
       <Modal
         open={accModalOpen}
         onClose={() => setAccModalOpen(false)}
-        title={editingAcc ? "Cập nhật tài khoản hệ thống" : "Tạo tài khoản người dùng mới"}
+        title={editingAcc ? `Cập nhật tài khoản ${editingAcc.username}` : "Cấp tài khoản cho nhân viên"}
       >
         <form onSubmit={handleSaveAccount} className="space-y-4 text-sm">
+          {editingAcc ? (
+            <div className="rounded-xl bg-[#F7F8F6] px-3.5 py-2 text-xs text-zinc-600">
+              Nhân viên: <strong>{editingAcc.fullName}</strong> ({editingAcc.employeeId}). Họ tên, SĐT sửa ở trang
+              Nhân viên.
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-semibold text-zinc-600">Nhân viên *</label>
+              <select
+                required
+                value={employeeId}
+                onChange={(e) => {
+                  setEmployeeId(e.target.value);
+                  const emp = employees.find((x) => x.id === e.target.value);
+                  if (emp) setRole(emp.role);
+                }}
+                className={INPUT}
+              >
+                {employeesWithoutAccount.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.code} – {emp.fullName} ({ROLE_LABELS[emp.role]})
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-zinc-400">Chỉ hiện nhân viên chưa có tài khoản và chưa thôi việc.</p>
+            </div>
+          )}
           <div>
             <label className="block text-xs font-semibold text-zinc-600">Tên đăng nhập *</label>
             <input
@@ -481,41 +477,53 @@ export default function SystemAdminPage() {
               required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
+              placeholder="vd: thao.bh"
+              className={INPUT}
             />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-zinc-600">Họ và tên nhân viên *</label>
-            <input
-              type="text"
-              required
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-zinc-600">Email *</label>
+            <label className="block text-xs font-semibold text-zinc-600">
+              Email khôi phục {editingAcc ? "*" : "(bỏ trống = email nhân viên)"}
+            </label>
             <input
               type="email"
-              required
+              required={Boolean(editingAcc)}
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
+              placeholder={employees.find((x) => x.id === employeeId)?.email}
+              className={INPUT}
             />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-zinc-600">Phân quyền vai trò</label>
+            <label className="block text-xs font-semibold text-zinc-600">Vai trò</label>
             <select
               value={role}
+              disabled={editingAcc?.id === user?.id}
               onChange={(e) => setRole(e.target.value as UserRole)}
-              className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
+              className={INPUT}
             >
               <option value="SALES">Nhân viên bán hàng</option>
               <option value="WAREHOUSE">Nhân viên kho</option>
               <option value="MANAGER">Quản lý cửa hàng</option>
             </select>
+            <p className="mt-1 text-xs text-zinc-400">
+              Bộ phận của nhân viên được cập nhật theo vai trò.
+              {editingAcc && " Đổi vai trò sẽ kết thúc các phiên đăng nhập hiện có của tài khoản này."}
+            </p>
           </div>
+          {!editingAcc && (
+            <div>
+              <label className="block text-xs font-semibold text-zinc-600">Mật khẩu khởi tạo * (tối thiểu 6 ký tự)</label>
+              <input
+                type="text"
+                required
+                minLength={6}
+                value={initialPassword}
+                onChange={(e) => setInitialPassword(e.target.value)}
+                className={`${INPUT} font-mono`}
+              />
+            </div>
+          )}
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
@@ -526,15 +534,16 @@ export default function SystemAdminPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={busy || (!editingAcc && !employeeId)}
+              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D] disabled:opacity-50"
             >
-              Lưu tài khoản
+              {busy ? "Đang lưu..." : "Lưu tài khoản"}
             </button>
           </div>
         </form>
       </Modal>
 
-      {/* Reset Password Modal */}
+      {/* Đặt lại mật khẩu */}
       <Modal
         open={Boolean(resetTarget)}
         onClose={() => setResetTarget(null)}
@@ -543,15 +552,16 @@ export default function SystemAdminPage() {
       >
         <div className="space-y-4 text-sm">
           <p className="text-xs text-zinc-500">
-            Cấp mật khẩu tạm thời mới cho nhân viên <strong>{resetTarget?.fullName}</strong>. Nhân viên sẽ đổi lại mật khẩu ở lần đăng nhập kế tiếp.
+            Đặt mật khẩu mới cho <strong>{resetTarget?.fullName}</strong> và báo trực tiếp cho nhân viên. Các phiên
+            đăng nhập hiện có của tài khoản sẽ kết thúc. Thao tác này không mở khóa tài khoản.
           </p>
           <div>
-            <label className="block text-xs font-semibold text-zinc-600">Mật khẩu tạm thời mới</label>
+            <label className="block text-xs font-semibold text-zinc-600">Mật khẩu mới (tối thiểu 6 ký tự)</label>
             <input
               type="text"
-              value={tempPassword}
-              onChange={(e) => setTempPassword(e.target.value)}
-              className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2 font-mono"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className={`${INPUT} font-mono`}
             />
           </div>
           <div className="flex justify-end gap-2">
@@ -564,13 +574,9 @@ export default function SystemAdminPage() {
             </button>
             <button
               type="button"
-              onClick={async () => {
-                if (!resetTarget) return;
-                await adminService.resetAccountPassword(resetTarget.id, tempPassword);
-                setResetTarget(null);
-                showToast(`Đã đặt lại mật khẩu cho tài khoản ${resetTarget.username}!`);
-              }}
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={busy || newPassword.length < 6}
+              onClick={() => void handleResetPassword()}
+              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D] disabled:opacity-50"
             >
               Xác nhận đặt lại
             </button>

@@ -3,13 +3,16 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Edit2, Eye, Plus, Search, Trash2 } from "lucide-react";
 import { Badge, Drawer, Modal, PageHeader } from "@/components/ui";
+import { shouldUseMock } from "@/config/api";
 import { useToast } from "@/context/ToastContext";
-import { formatCurrency } from "@/lib/format";
+import { emptyNumberFields, formatCurrency, toNumberInput, type NumberInput } from "@/lib/format";
 import { inventoryService } from "@/services";
 import type { Author, Book, BookStatus, Category, Publisher } from "@/types";
 
 export default function BooksPage() {
   const { showToast } = useToast();
+  // Với API thật, tồn kho do chứng từ quyết định – không sửa tay trên form sách.
+  const stockEditable = shouldUseMock("books");
 
   const [books, setBooks] = useState<Book[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -31,14 +34,15 @@ export default function BooksPage() {
   const [categoryId, setCategoryId] = useState("");
   const [authorId, setAuthorId] = useState("");
   const [publisherId, setPublisherId] = useState("");
-  const [publishYear, setPublishYear] = useState(2025);
-  const [importPrice, setImportPrice] = useState(80000);
-  const [sellPrice, setSellPrice] = useState(135000);
+  const [publishYear, setPublishYear] = useState<NumberInput>(2025);
+  const [importPrice, setImportPrice] = useState<NumberInput>(80000);
+  const [sellPrice, setSellPrice] = useState<NumberInput>(135000);
   const [stock, setStock] = useState(20);
-  const [minStock, setMinStock] = useState(10);
+  const [minStock, setMinStock] = useState<NumberInput>(10);
   const [shelfLocation, setShelfLocation] = useState("Kệ A1 - Tầng 1");
   const [status, setStatus] = useState<BookStatus>("ACTIVE");
   const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const loadAll = async () => {
     const [bk, cat, aut, pub] = await Promise.all([
@@ -54,7 +58,13 @@ export default function BooksPage() {
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
+    // Lỗi tải (mất kết nối, hết phiên…) hiện thành thông báo thay vì bảng trống im lặng.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = useMemo(() => {
@@ -112,41 +122,60 @@ export default function BooksPage() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (saving) return;
+    const missing = emptyNumberFields({ "Năm xuất bản": publishYear, "Giá nhập": importPrice, "Giá bán": sellPrice, "Định mức tối thiểu": minStock });
+    if (missing.length > 0) {
+      showToast(`Vui lòng nhập: ${missing.join(", ")}.`, "warning");
+      return;
+    }
     const cat = categories.find((c) => c.id === categoryId);
     const aut = authors.find((a) => a.id === authorId);
     const pub = publishers.find((p) => p.id === publisherId);
 
-    await inventoryService.saveBook({
-      id: editing?.id,
-      sku,
-      isbn,
-      title,
-      categoryId,
-      categoryName: cat?.name ?? "Chưa phân loại",
-      authorId,
-      authorName: aut?.name ?? "Chưa rõ",
-      publisherId,
-      publisherName: pub?.name ?? "Chưa rõ",
-      publishYear,
-      importPrice,
-      sellPrice,
-      stock,
-      minStock,
-      shelfLocation,
-      status: stock === 0 && status === "ACTIVE" ? "OUT_OF_STOCK" : status,
-      description,
-    });
+    setSaving(true);
+    try {
+      await inventoryService.saveBook({
+        id: editing?.id,
+        sku,
+        isbn,
+        title,
+        categoryId,
+        categoryName: cat?.name ?? "Chưa phân loại",
+        authorId,
+        authorName: aut?.name ?? "Chưa rõ",
+        publisherId,
+        publisherName: pub?.name ?? "Chưa rõ",
+        publishYear: Number(publishYear),
+        importPrice: Number(importPrice),
+        sellPrice: Number(sellPrice),
+        stock, // API thật bỏ qua trường này
+        minStock: Number(minStock),
+        shelfLocation,
+        status: stock === 0 && status === "ACTIVE" ? "OUT_OF_STOCK" : status,
+        description,
+      });
 
-    await loadAll();
-    setFormOpen(false);
-    showToast(editing ? "Đã cập nhật thông tin sách" : "Đã thêm đầu sách mới vào hệ thống");
+      await loadAll();
+      setFormOpen(false);
+      showToast(editing ? "Đã cập nhật thông tin sách" : "Đã thêm đầu sách mới vào hệ thống");
+    } catch (err) {
+      // Lỗi từ backend: trùng mã/ISBN, dữ liệu sai, không có quyền…
+      showToast(err instanceof Error ? err.message : "Không lưu được thông tin sách.", "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleDelete = async (book: Book) => {
     if (!window.confirm(`Xác nhận xóa đầu sách "${book.title}"?`)) return;
-    await inventoryService.deleteBook(book.id);
-    await loadAll();
-    showToast("Đã xóa đầu sách", "info");
+    try {
+      // Sách đã có giao dịch / còn tồn: backend chuyển "Ngừng kinh doanh" thay vì xóa.
+      const message = await inventoryService.deleteBook(book.id);
+      await loadAll();
+      showToast(message ?? "Đã xóa đầu sách", "info");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Không xóa được đầu sách.", "error");
+    }
   };
 
   return (
@@ -369,6 +398,8 @@ export default function BooksPage() {
                 required
                 value={sku}
                 onChange={(e) => setSku(e.target.value)}
+                disabled={!!editing}
+                title={editing ? "Mã sách không đổi sau khi tạo" : undefined}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -447,7 +478,7 @@ export default function BooksPage() {
                 type="number"
                 min={0}
                 value={importPrice}
-                onChange={(e) => setImportPrice(Number(e.target.value))}
+                onChange={(e) => setImportPrice(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -457,7 +488,7 @@ export default function BooksPage() {
                 type="number"
                 min={0}
                 value={sellPrice}
-                onChange={(e) => setSellPrice(Number(e.target.value))}
+                onChange={(e) => setSellPrice(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -466,8 +497,10 @@ export default function BooksPage() {
               <input
                 type="number"
                 min={0}
-                value={stock}
+                value={stockEditable ? stock : (editing?.stock ?? 0)}
                 onChange={(e) => setStock(Number(e.target.value))}
+                disabled={!stockEditable}
+                title={stockEditable ? undefined : "Tồn kho chỉ thay đổi qua phiếu nhập, bán hàng, đổi trả, kiểm kê"}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -477,7 +510,7 @@ export default function BooksPage() {
                 type="number"
                 min={0}
                 value={minStock}
-                onChange={(e) => setMinStock(Number(e.target.value))}
+                onChange={(e) => setMinStock(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -489,7 +522,7 @@ export default function BooksPage() {
               <input
                 type="number"
                 value={publishYear}
-                onChange={(e) => setPublishYear(Number(e.target.value))}
+                onChange={(e) => setPublishYear(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -536,9 +569,10 @@ export default function BooksPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={saving}
+              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D] disabled:opacity-50"
             >
-              Lưu đầu sách
+              {saving ? "Đang lưu..." : "Lưu đầu sách"}
             </button>
           </div>
         </form>

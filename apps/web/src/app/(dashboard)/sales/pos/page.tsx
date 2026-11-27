@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   CreditCard,
@@ -17,24 +17,29 @@ import {
   X,
 } from "lucide-react";
 import { Badge, Modal } from "@/components/ui";
+import { shouldUseMock } from "@/config/api";
 import { BRAND_CONFIG } from "@/config/brand";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
-import { triggerPrint } from "@/lib/export";
+import { InvoiceReceipt, printInvoice } from "@/components/invoice/InvoiceReceipt";
 import { formatCurrency, formatDateTime } from "@/lib/format";
+import { ApiError } from "@/lib/http-client";
 import { adminService, inventoryService, salesService } from "@/services";
 import type {
   Book,
+  CartRequest,
   Category,
   Customer,
   Invoice,
   InvoiceItem,
+  InvoicePreview,
   PaymentMethod,
   PromotionCampaign,
   Voucher,
 } from "@/types";
 
 interface DraftCart {
+  pendingCheckout?: Parameters<typeof salesService.createInvoice>[0];
   id: string;
   label: string;
   items: InvoiceItem[];
@@ -45,10 +50,13 @@ interface DraftCart {
   paymentMethod: PaymentMethod;
   amountGiven: string;
   note: string;
+  /** Khóa chống tạo hóa đơn lặp: giữ nguyên khi bấm lại / thử lại, đơn mới có khóa mới. */
+  requestKey: string;
 }
 
 function createEmptyDraft(index: number): DraftCart {
   return {
+    requestKey: crypto.randomUUID(),
     id: `draft-${Date.now()}-${index}`,
     label: `Đơn tạm #${index}`,
     items: [],
@@ -86,6 +94,10 @@ export default function PosPage() {
   // Receipt Preview Modal
   const [completedInvoice, setCompletedInvoice] = useState<Invoice | null>(null);
 
+  // API thật cho bán hàng (cờ "sales"); đang gửi yêu cầu lập hóa đơn thì khóa nút.
+  const realSales = !shouldUseMock("sales");
+  const [submitting, setSubmitting] = useState(false);
+
   const loadData = async () => {
     const [bk, cat, cus, prm, vc] = await Promise.all([
       inventoryService.getBooks(),
@@ -98,11 +110,18 @@ export default function PosPage() {
     setCategories(cat);
     setCustomers(cus);
     setPromotions(prm.filter((p) => p.status === "ACTIVE"));
-    setVouchers(vc.filter((v) => v.isActive && v.usedCount < v.usageLimit));
+    // API thật trả `status` đã xét hạn dùng, lượt dùng, tạm ngừng.
+    setVouchers(vc.filter((v) => (v.status ? v.status === "ACTIVE" : v.isActive && v.usedCount < v.usageLimit)));
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadData());
+    void Promise.resolve()
+      .then(() => loadData())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
+    // Lỗi tải (mất kết nối, hết phiên…) hiện thành thông báo thay vì bảng trống im lặng.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const currentDraft = useMemo(
@@ -111,6 +130,10 @@ export default function PosPage() {
   );
 
   const updateCurrentDraft = (updater: (draft: DraftCart) => DraftCart) => {
+    if (currentDraft.pendingCheckout || submitting) {
+      showToast("Hãy khôi phục kết quả đơn đã gửi trước khi sửa giỏ.", "warning");
+      return;
+    }
     setDrafts((prev) =>
       prev.map((d) => (d.id === currentDraft.id ? updater(d) : d)),
     );
@@ -196,22 +219,22 @@ export default function PosPage() {
     });
   };
 
-  const subtotal = useMemo(
+  const localSubtotal = useMemo(
     () => currentDraft.items.reduce((sum, i) => sum + i.subtotal, 0),
     [currentDraft.items],
   );
 
-  // Calculate discount from selected Promotion Campaign OR Applied Voucher
-  const { discountAmount, appliedPromoName } = useMemo(() => {
+  // Chế độ Mock: tính giảm giá trên FE như cũ. API thật: dùng preview của backend (bên dưới).
+  const localDiscount = useMemo(() => {
     let promoDiscount = 0;
     let promoLabel = "";
 
     if (currentDraft.selectedPromoId) {
       const promo = promotions.find((p) => p.id === currentDraft.selectedPromoId);
-      if (promo && subtotal >= promo.minOrderValue) {
+      if (promo && localSubtotal >= promo.minOrderValue) {
         promoDiscount =
           promo.discountType === "PERCENT"
-            ? Math.round((subtotal * promo.discountValue) / 100)
+            ? Math.round((localSubtotal * promo.discountValue) / 100)
             : promo.discountValue;
         if (promo.maxDiscountAmount) {
           promoDiscount = Math.min(promoDiscount, promo.maxDiscountAmount);
@@ -225,10 +248,10 @@ export default function PosPage() {
       const vc = vouchers.find(
         (v) => v.code.toUpperCase() === currentDraft.appliedVoucherCode.toUpperCase(),
       );
-      if (vc && subtotal >= vc.minOrderValue) {
+      if (vc && localSubtotal >= vc.minOrderValue) {
         voucherDiscount =
           vc.discountType === "PERCENT"
-            ? Math.round((subtotal * vc.discountValue) / 100)
+            ? Math.round((localSubtotal * vc.discountValue) / 100)
             : vc.discountValue;
         if (vc.maxDiscountAmount) {
           voucherDiscount = Math.min(voucherDiscount, vc.maxDiscountAmount);
@@ -236,24 +259,90 @@ export default function PosPage() {
       }
     }
 
-    const totalDiscount = Math.min(subtotal, promoDiscount + voucherDiscount);
+    const totalDiscount = Math.min(localSubtotal, promoDiscount + voucherDiscount);
     return { discountAmount: totalDiscount, appliedPromoName: promoLabel };
-  }, [currentDraft.selectedPromoId, currentDraft.appliedVoucherCode, promotions, vouchers, subtotal]);
+  }, [currentDraft.selectedPromoId, currentDraft.appliedVoucherCode, promotions, vouchers, localSubtotal]);
+
+  // ───── Xem trước từ backend (API thật) ─────
+  // Giỏ gửi backend chỉ gồm mã sách + số lượng; giá, khuyến mãi theo phạm vi, voucher do backend tính.
+  const cartSignature = JSON.stringify({
+    items: currentDraft.items.map((i) => ({ bookId: i.bookId, quantity: i.quantity })),
+    customerId: currentDraft.customerId || null,
+    promotionId: currentDraft.selectedPromoId || undefined,
+    voucherCode: currentDraft.appliedVoucherCode || undefined,
+    paymentMethod: currentDraft.paymentMethod,
+    amountPaid:
+      currentDraft.paymentMethod === "CASH" && currentDraft.amountGiven !== ""
+        ? Number(currentDraft.amountGiven)
+        : undefined,
+  } satisfies CartRequest);
+
+  const [previewState, setPreviewState] = useState<{
+    signature: string;
+    data?: InvoicePreview;
+    error?: string;
+  } | null>(null);
+  const [previewNonce, setPreviewNonce] = useState(0); // tăng để buộc tính lại (vd sau khi lập hóa đơn lỗi)
+  const previewSeq = useRef(0);
+
+  useEffect(() => {
+    if (!realSales) return;
+    const cart = JSON.parse(cartSignature) as CartRequest;
+    if (cart.items.length === 0) return;
+    const seq = ++previewSeq.current;
+    // Đợi người dùng ngừng thao tác rồi mới gọi; response của yêu cầu cũ (seq cũ) bị bỏ qua.
+    const timer = setTimeout(() => {
+      salesService
+        .previewInvoice(cart)
+        .then((data) => {
+          if (seq === previewSeq.current) setPreviewState({ signature: cartSignature, data });
+        })
+        .catch((err) => {
+          if (seq === previewSeq.current) {
+            setPreviewState({
+              signature: cartSignature,
+              error: err instanceof Error ? err.message : "Không tính được tổng tiền.",
+            });
+          }
+        });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [realSales, cartSignature, previewNonce]);
+
+  // Chỉ tin preview tính cho đúng giỏ hàng đang hiển thị.
+  const preview = previewState?.signature === cartSignature ? previewState.data : undefined;
+  const previewError = previewState?.signature === cartSignature ? previewState.error : undefined;
+  const previewPending = realSales && currentDraft.items.length > 0 && !preview && !previewError;
+
+  const subtotal = realSales ? (preview?.subtotal ?? localSubtotal) : localSubtotal;
+  const discountAmount = realSales ? (preview?.discountAmount ?? 0) : localDiscount.discountAmount;
+  const appliedPromoName = realSales
+    ? preview?.promotion?.applied
+      ? preview.promotion.name
+      : ""
+    : localDiscount.appliedPromoName;
 
   const totalPayable = Math.max(0, subtotal - discountAmount);
   const numericGiven = Number(currentDraft.amountGiven) || totalPayable;
   const changeAmount =
     currentDraft.paymentMethod === "CASH" ? Math.max(0, numericGiven - totalPayable) : 0;
+  const canCheckout =
+    currentDraft.items.length > 0 && !submitting && !currentDraft.pendingCheckout && (!realSales || preview?.valid === true);
 
   const handleApplyVoucher = () => {
     const code = currentDraft.voucherInput.trim().toUpperCase();
     if (!code) return;
+    if (realSales) {
+      // Backend kiểm tra mã (hạn, lượt, đơn tối thiểu) trong preview; lý do hiển thị dưới tổng tiền.
+      updateCurrentDraft((d) => ({ ...d, appliedVoucherCode: code, voucherInput: "" }));
+      return;
+    }
     const found = vouchers.find((v) => v.code.toUpperCase() === code);
     if (!found) {
       showToast("Mã giảm giá không tồn tại hoặc đã hết lượt sử dụng.", "error");
       return;
     }
-    if (subtotal < found.minOrderValue) {
+    if (localSubtotal < found.minOrderValue) {
       showToast(
         `Mã ${code} yêu cầu đơn tối thiểu ${formatCurrency(found.minOrderValue)}.`,
         "warning",
@@ -272,6 +361,10 @@ export default function PosPage() {
   };
 
   const handleCloseDraftTab = (id: string) => {
+    if (submitting || drafts.find((d) => d.id === id)?.pendingCheckout) {
+      showToast("Hãy khôi phục kết quả đơn đã gửi trước khi đóng đơn.", "warning");
+      return;
+    }
     if (drafts.length === 1) {
       const fresh = createEmptyDraft(1);
       setDrafts([fresh]);
@@ -288,13 +381,20 @@ export default function PosPage() {
   const handleQuickCreateCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newCustomerName.trim() || !newCustomerPhone.trim()) return;
-    const created = await salesService.saveCustomer({
-      fullName: newCustomerName.trim(),
-      phone: newCustomerPhone.trim(),
-      email: "",
-      address: "",
-      tier: "STANDARD",
-    });
+    let created;
+    try {
+      created = await salesService.saveCustomer({
+        fullName: newCustomerName.trim(),
+        phone: newCustomerPhone.trim(),
+        email: "",
+        address: "",
+        tier: "STANDARD",
+      });
+    } catch (err) {
+      // vd SĐT sai định dạng hoặc đã đăng ký
+      showToast(err instanceof Error ? err.message : "Không thêm được khách hàng.", "error");
+      return;
+    }
     const updatedCustomers = await salesService.getCustomers();
     setCustomers(updatedCustomers);
     updateCurrentDraft((d) => ({ ...d, customerId: created.id }));
@@ -305,44 +405,80 @@ export default function PosPage() {
   };
 
   const handleCheckout = async () => {
-    if (currentDraft.items.length === 0) {
-      showToast("Giỏ hàng đang trống, vui lòng chọn ít nhất 1 cuốn sách.", "warning");
-      return;
-    }
-    if (
-      currentDraft.paymentMethod === "CASH" &&
-      currentDraft.amountGiven !== "" &&
-      Number(currentDraft.amountGiven) < totalPayable
-    ) {
-      showToast("Số tiền khách đưa nhỏ hơn tổng cần thanh toán.", "error");
-      return;
+    if (submitting) return;
+    const pending = currentDraft.pendingCheckout;
+    if (!pending) {
+      if (currentDraft.items.length === 0) {
+        showToast("Giỏ hàng đang trống, vui lòng chọn ít nhất 1 cuốn sách.", "warning");
+        return;
+      }
+      if (
+        currentDraft.paymentMethod === "CASH" &&
+        currentDraft.amountGiven !== "" &&
+        Number(currentDraft.amountGiven) < totalPayable
+      ) {
+        showToast("Số tiền khách đưa nhỏ hơn tổng cần thanh toán.", "error");
+        return;
+      }
+      if (realSales && !preview?.valid) {
+        showToast(preview?.messages.join(" ") || "Đang tính tổng tiền, vui lòng chờ giây lát.", "warning");
+        return;
+      }
     }
 
     const selectedCus = customers.find((c) => c.id === currentDraft.customerId);
+    const draftId = currentDraft.id;
 
-    const invoice = await salesService.createInvoice({
-      customerId: selectedCus?.id ?? null,
-      customerName: selectedCus?.fullName ?? "Khách lẻ vãng lai",
-      customerPhone: selectedCus?.phone ?? "—",
-      cashierId: user?.id ?? "USR-02",
-      cashierName: user?.fullName ?? "Nhân viên thu ngân",
-      items: currentDraft.items,
-      subtotal,
-      promotionId: currentDraft.selectedPromoId || undefined,
-      promotionName: appliedPromoName || undefined,
-      voucherCode: currentDraft.appliedVoucherCode || undefined,
-      discountAmount,
-      totalAmount: totalPayable,
-      amountPaid: currentDraft.paymentMethod === "CASH" ? numericGiven : totalPayable,
-      changeAmount,
-      paymentMethod: currentDraft.paymentMethod,
-      note: currentDraft.note || undefined,
-    });
+    const payload = pending ?? {
+        customerId: selectedCus?.id ?? null,
+        customerName: selectedCus?.fullName ?? "Khách lẻ vãng lai",
+        customerPhone: selectedCus?.phone ?? "—",
+        cashierId: user?.id ?? "USR-02", // API thật bỏ qua – người lập lấy từ phiên đăng nhập
+        cashierName: user?.fullName ?? "Nhân viên thu ngân",
+        items: currentDraft.items,
+        subtotal,
+        promotionId: currentDraft.selectedPromoId || undefined,
+        promotionName: appliedPromoName || undefined,
+        voucherCode: currentDraft.appliedVoucherCode || undefined,
+        discountAmount,
+        totalAmount: totalPayable,
+        amountPaid: currentDraft.paymentMethod === "CASH" ? numericGiven : totalPayable,
+        changeAmount,
+        paymentMethod: currentDraft.paymentMethod,
+        note: currentDraft.note || undefined,
+        requestKey: currentDraft.requestKey,
+        expectedTotal: realSales ? preview?.totalAmount : undefined,
+      };
+    setSubmitting(true);
+    let invoice: Invoice;
+    try {
+      invoice = await salesService.createInvoice(payload);
+    } catch (err) {
+      // HTTP 4xx xác nhận bị từ chối; lỗi mạng/5xx vẫn có thể đã ghi hóa đơn.
+      const uncertain = !(err instanceof ApiError) || err.status === 0 || err.status >= 500;
+      setDrafts((prev) => prev.map((d) => d.id === draftId
+        ? { ...d, pendingCheckout: uncertain ? payload : undefined }
+        : d));
+      // Lỗi (kể cả 409, lỗi mạng): giữ nguyên giỏ hàng và KHÔNG đổi requestKey – thử lại cùng nội dung
+      // sẽ nhận đúng hóa đơn gốc nếu lần trước đã ghi; nếu đơn tạm đã thành hóa đơn với nội dung khác,
+      // backend trả 409 kèm mã hóa đơn (người dùng mở đơn tạm mới để bán tiếp).
+      // Tính lại preview vì giá / tồn / khuyến mãi có thể vừa thay đổi.
+      showToast(err instanceof Error ? err.message : "Không lập được hóa đơn.", "error");
+      setPreviewState(null);
+      setPreviewNonce((n) => n + 1);
+      return;
+    } finally {
+      setSubmitting(false);
+    }
 
+    // Thành công mới xóa giỏ và tải lại tồn kho, điểm khách, lượt voucher.
     setCompletedInvoice(invoice);
-    await loadData();
-    handleCloseDraftTab(currentDraft.id);
+    setDrafts((prev) => {
+      const remaining = prev.filter((d) => d.id !== draftId);
+      return remaining.length ? remaining : [createEmptyDraft(1)];
+    });
     showToast(`Đã lập hóa đơn ${invoice.code} thành công!`);
+    loadData().catch(() => showToast("Đã lập hóa đơn nhưng chưa tải lại được dữ liệu, hãy tải lại trang.", "warning"));
   };
 
   return (
@@ -724,18 +860,35 @@ export default function PosPage() {
               </div>
               <div className="flex justify-between border-t border-[#E6E8E5] pt-2 text-base font-bold text-zinc-900">
                 <span>Khách cần trả</span>
-                <span className="text-[#2D6A4F]">{formatCurrency(totalPayable)}</span>
+                <span className="text-[#2D6A4F]">
+                  {previewPending ? "Đang tính…" : formatCurrency(totalPayable)}
+                </span>
               </div>
             </div>
+
+            {/* Lý do chưa thanh toán được (từ backend): thiếu tồn, khuyến mãi / voucher không áp dụng… */}
+            {realSales && (previewError || (preview && preview.messages.length > 0)) && (
+              <ul className="space-y-1 rounded-xl border border-[#FECACA] bg-[#FEE2E2] px-3 py-2 text-xs text-[#B91C1C]">
+                {previewError && <li>{previewError}</li>}
+                {preview?.messages.map((m) => <li key={m}>{m}</li>)}
+              </ul>
+            )}
 
             <button
               type="button"
               onClick={handleCheckout}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#2D6A4F] py-3 text-sm font-semibold text-white transition-colors hover:bg-[#23533D]"
+              disabled={currentDraft.pendingCheckout ? submitting : !canCheckout}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#2D6A4F] py-3 text-sm font-semibold text-white transition-colors hover:bg-[#23533D] disabled:cursor-not-allowed disabled:opacity-60"
             >
               <CheckCircle2 className="h-4 w-4" />
-              Lập hóa đơn &amp; Thanh toán
+              {submitting ? "Đang xử lý…" : currentDraft.pendingCheckout ? "Khôi phục kết quả đơn đã gửi" : "Lập hóa đơn & Thanh toán"}
             </button>
+            {currentDraft.pendingCheckout && (
+              <p role="status" className="text-xs text-amber-700">
+                Chưa rõ kết quả lần gửi trước. Khôi phục bằng đúng nội dung và khóa đã gửi, kể cả khi preview hết tồn/hết lượt.
+                Sau khi có kết quả, bạn có thể sửa giỏ hoặc mở đơn mới.
+              </p>
+            )}
           </div>
         </div>
       </div>
@@ -805,7 +958,7 @@ export default function PosPage() {
             </button>
             <button
               type="button"
-              onClick={triggerPrint}
+              onClick={() => completedInvoice && printInvoice(completedInvoice)}
               className="inline-flex items-center gap-1.5 rounded-xl bg-[#2D6A4F] px-4 py-2 text-sm font-semibold text-white"
             >
               <Printer className="h-4 w-4" />
@@ -817,8 +970,10 @@ export default function PosPage() {
         {completedInvoice && (
           <div className="space-y-3 text-xs text-zinc-700">
             <div className="text-center border-b border-dashed border-zinc-300 pb-3">
-              <div className="text-base font-bold text-zinc-900">{BRAND_CONFIG.companyName}</div>
-              <div className="text-zinc-500">{BRAND_CONFIG.branches[0].address}</div>
+              <div className="text-base font-bold text-zinc-900">{BRAND_CONFIG.name}</div>
+              <div className="text-zinc-500">
+                {BRAND_CONFIG.store.name} – {BRAND_CONFIG.store.address}
+              </div>
               <div className="mt-2 font-mono font-semibold text-zinc-900">
                 Mã HĐ: {completedInvoice.code}
               </div>
@@ -858,6 +1013,9 @@ export default function PosPage() {
           </div>
         )}
       </Modal>
+
+      {/* Bản in hóa đơn vừa lập (chỉ hiện khi in) */}
+      <InvoiceReceipt invoice={completedInvoice} />
     </div>
   );
 }

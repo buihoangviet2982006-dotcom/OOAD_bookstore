@@ -4,7 +4,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Download, Eye, Plus, Printer, RotateCcw, Search } from "lucide-react";
 import { Badge, Drawer, PageHeader } from "@/components/ui";
-import { downloadCsv, triggerPrint } from "@/lib/export";
+import { BRAND_CONFIG } from "@/config/brand";
+import { useToast } from "@/context/ToastContext";
+import { InvoiceReceipt, printInvoice } from "@/components/invoice/InvoiceReceipt";
+import { downloadCsv } from "@/lib/export";
 import { formatCurrency, formatDateTime } from "@/lib/format";
 import { salesService } from "@/services";
 import type { Invoice, PaymentMethod } from "@/types";
@@ -16,6 +19,7 @@ const PAYMENT_LABELS: Record<PaymentMethod, string> = {
 };
 
 export default function InvoicesPage() {
+  const { showToast } = useToast();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [query, setQuery] = useState("");
   const [paymentFilter, setPaymentFilter] = useState("ALL");
@@ -23,8 +27,13 @@ export default function InvoicesPage() {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
 
   useEffect(() => {
-    salesService.getInvoices().then(setInvoices);
-  }, []);
+    salesService
+      .getInvoices()
+      .then(setInvoices)
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được danh sách hóa đơn.", "error"),
+      );
+  }, [showToast]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -193,7 +202,7 @@ export default function InvoicesPage() {
             </Link>
             <button
               type="button"
-              onClick={triggerPrint}
+              onClick={() => selectedInvoice && printInvoice(selectedInvoice)}
               className="inline-flex items-center gap-1.5 rounded-xl bg-[#2D6A4F] px-4 py-2 text-xs font-semibold text-white hover:bg-[#23533D]"
             >
               <Printer className="h-3.5 w-3.5" />
@@ -204,6 +213,10 @@ export default function InvoicesPage() {
       >
         {selectedInvoice && (
           <div className="space-y-5 text-sm">
+            <div className="text-center text-xs text-zinc-500">
+              <div className="text-sm font-bold text-zinc-900">{BRAND_CONFIG.name}</div>
+              {BRAND_CONFIG.store.name} – {BRAND_CONFIG.store.address}
+            </div>
             <div className="grid grid-cols-2 gap-3 rounded-xl bg-[#F7F8F6] p-4 text-xs">
               <div>
                 <span className="text-zinc-400">Khách hàng:</span>
@@ -280,6 +293,9 @@ export default function InvoicesPage() {
           </div>
         )}
       </Drawer>
+
+      {/* Bản in của hóa đơn đang xem (chỉ hiện khi in) */}
+      <InvoiceReceipt invoice={selectedInvoice} />
     </div>
   );
 }

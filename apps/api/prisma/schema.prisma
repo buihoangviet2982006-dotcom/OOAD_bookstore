@@ -1,3 +1,14 @@
+// Schema CSDL – Phần mềm quản lý nhà sách.
+//
+// Quy ước đặt tên:
+// - Tên model / field theo Class diagram (vd: Sach.tenSach).
+// - Tên bảng / cột trong PostgreSQL theo Relational data model (vd: sach.ten_sach).
+// - Giá trị enum dùng tiếng Anh để khớp hợp đồng API với frontend (apps/web/src/types).
+// Các điểm khác RDM và lý do: xem docs/database.md.
+//
+// Các giá trị suy ra (không lưu cột): thành tiền từng dòng, còn nợ phiếu nhập, chênh lệch kiểm kê,
+// tổng công nợ NCC, hạng khách hàng, trạng thái hết hàng, trạng thái công nợ, trạng thái CTKM theo ngày.
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -6,11 +17,495 @@ datasource db {
   provider = "postgresql"
 }
 
-model Book {
-  id        Int      @id @default(autoincrement())
-  title     String
-  author    String
-  price     Decimal  @db.Decimal(10, 2)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+// ───────────────────────── Enum ─────────────────────────
+
+/// Vai trò người dùng / bộ phận nhân viên.
+enum VaiTro {
+  MANAGER // Quản lý
+  SALES // Nhân viên bán hàng
+  WAREHOUSE // Nhân viên kho
+}
+
+enum TrangThaiNhanVien {
+  WORKING // Đang làm việc
+  ON_LEAVE // Đang tạm nghỉ
+  RESIGNED // Đã thôi việc
+}
+
+enum TrangThaiTaiKhoan {
+  ACTIVE
+  LOCKED
+}
+
+/// Chỉ lưu trạng thái do người dùng quyết định; "hết hàng" suy ra từ số lượng tồn.
+enum TrangThaiSach {
+  ACTIVE // Đang kinh doanh
+  DISCONTINUED // Ngừng kinh doanh
+}
+
+enum TrangThaiNhaCungCap {
+  ACTIVE // Đang hợp tác
+  INACTIVE // Ngừng hợp tác
+}
+
+/// Trạng thái do Quản lý điều khiển. Trạng thái hiển thị (ACTIVE/SCHEDULED/EXPIRED) suy ra thêm từ ngày.
+enum TrangThaiCTKM {
+  ACTIVE // Đang bật – hiệu lực theo khoảng ngày
+  PAUSED // Tạm dừng – tiếp tục được
+  CANCELLED // Đã hủy / ngưng – trạng thái cuối
+}
+
+enum LoaiGiamGia {
+  PERCENT // Giảm theo phần trăm
+  FIXED // Giảm số tiền cố định
+}
+
+enum PhuongThucThanhToan {
+  CASH
+  TRANSFER
+  CARD
+}
+
+enum TrangThaiHoaDon {
+  COMPLETED // Đã hoàn tất
+  PARTIAL_RETURN // Đã đổi/trả một phần
+  RETURNED // Đã trả toàn bộ
+}
+
+enum HinhThucDoiTra {
+  RETURN // Trả hàng – hoàn tiền
+  EXCHANGE // Đổi sang sách khác
+}
+
+// ───────────────────────── Nhân sự & tài khoản ─────────────────────────
+
+model NhanVien {
+  maNV        String            @id @map("ma_nv") @db.VarChar(50)
+  hoTen       String            @map("ho_ten") @db.VarChar(150)
+  soDienThoai String            @unique @map("so_dien_thoai") @db.VarChar(20)
+  email       String            @unique @db.VarChar(150)
+  diaChi      String?           @map("dia_chi") @db.Text
+  ngayVaoLam  DateTime          @map("ngay_vao_lam") @db.Date
+  /// Bổ sung: bộ phận (đặc tả QLNV lọc theo phòng ban) – FE gọi là role.
+  boPhan      VaiTro            @map("bo_phan")
+  /// Bổ sung: chức vụ (mô tả yêu cầu QLNV).
+  chucVu      String            @map("chuc_vu") @db.VarChar(150)
+  /// Bổ sung: lương cơ bản – FE quản lý nhân viên có trường này.
+  luongCoBan  Decimal           @default(0) @map("luong_co_ban") @db.Decimal(14, 2)
+  /// Bổ sung: trạng thái làm việc (state diagram nhân viên).
+  trangThai   TrangThaiNhanVien @default(WORKING) @map("trang_thai")
+
+  taiKhoan          TaiKhoan?
+  hoaDons           HoaDon[]
+  phieuDoiTras      PhieuDoiTra[]
+  phieuNhaps        PhieuNhap[]
+  phieuThanhToanNCC PhieuThanhToanNCC[]
+  phieuKiemKes      PhieuKiemKe[]
+  banSaoLuus        BanSaoLuu[]
+
+  @@map("nhan_vien")
+}
+
+model TaiKhoan {
+  maTaiKhoan      String            @id @map("ma_tai_khoan") @db.VarChar(50)
+  tenDangNhap     String            @unique @map("ten_dang_nhap") @db.VarChar(100)
+  matKhauHash     String            @map("mat_khau_hash") @db.Text
+  emailKhoiPhuc   String            @unique @map("email_khoi_phuc") @db.VarChar(150)
+  /// RDM: boolean; dùng enum ACTIVE/LOCKED cho rõ nghĩa và khớp FE.
+  trangThai       TrangThaiTaiKhoan @default(ACTIVE) @map("trang_thai")
+  vaiTro          VaiTro            @map("vai_tro")
+  maNV            String            @unique @map("ma_nv") @db.VarChar(50)
+  /// Bổ sung: đếm số lần sai mật khẩu liên tiếp để tự khóa tài khoản.
+  soLanSaiMatKhau Int               @default(0) @map("so_lan_sai_mat_khau")
+  /// Bổ sung: phiên bản phiên đăng nhập; tăng khi đăng xuất/khóa/đổi mật khẩu để thu hồi token cũ.
+  phienBan        Int               @default(0) @map("phien_ban")
+  /// Bổ sung: OTP quên mật khẩu (chỉ lưu hash, dùng một lần, có hạn).
+  otpHash         String?           @map("otp_hash") @db.Text
+  otpHetHan       DateTime?         @map("otp_het_han") @db.Timestamptz(3)
+  otpSoLanSai     Int               @default(0) @map("otp_so_lan_sai")
+  /// Bổ sung: FE hiển thị lần đăng nhập cuối và ngày tạo.
+  lanDangNhapCuoi DateTime?         @map("lan_dang_nhap_cuoi") @db.Timestamptz(3)
+  ngayTao         DateTime          @default(now()) @map("ngay_tao") @db.Timestamptz(3)
+
+  nhanVien NhanVien @relation(fields: [maNV], references: [maNV])
+
+  @@map("tai_khoan")
+}
+
+// ───────────────────────── Danh mục & sách ─────────────────────────
+
+model TheLoai {
+  maTheLoai  String  @id @map("ma_the_loai") @db.VarChar(50)
+  /// Đặc tả QLDMS: không cho trùng tên thể loại.
+  tenTheLoai String  @unique @map("ten_the_loai") @db.VarChar(150)
+  moTa       String? @map("mo_ta") @db.Text
+
+  sachs Sach[]
+  ctkms ChuongTrinhKhuyenMai[]
+
+  @@map("the_loai")
+}
+
+model TacGia {
+  maTacGia  String  @id @map("ma_tac_gia") @db.VarChar(50)
+  tenTacGia String  @map("ten_tac_gia") @db.VarChar(150)
+  tieuSu    String? @map("tieu_su") @db.Text
+  /// Bổ sung: quốc tịch (mô tả yêu cầu + FE).
+  quocTich  String? @map("quoc_tich") @db.VarChar(100)
+
+  sachs Sach[]
+
+  @@map("tac_gia")
+}
+
+model NhaXuatBan {
+  maNXB       String  @id @map("ma_nxb") @db.VarChar(50)
+  tenNXB      String  @map("ten_nxb") @db.VarChar(200)
+  diaChi      String? @map("dia_chi") @db.Text
+  soDienThoai String? @map("so_dien_thoai") @db.VarChar(20)
+  /// Bổ sung: email (đặc tả QLDMS kiểm tra định dạng SĐT/Email + FE).
+  email       String? @db.VarChar(150)
+
+  sachs Sach[]
+
+  @@map("nha_xuat_ban")
+}
+
+model Sach {
+  /// Mã sách = SKU hiển thị trên FE.
+  maSach         String        @id @map("ma_sach") @db.VarChar(50)
+  isbn           String        @unique @db.VarChar(50)
+  tenSach        String        @map("ten_sach") @db.VarChar(255)
+  namXuatBan     Int?          @map("nam_xuat_ban")
+  giaNhap        Decimal       @map("gia_nhap") @db.Decimal(14, 2)
+  giaBan         Decimal       @map("gia_ban") @db.Decimal(14, 2)
+  soLuongTon     Int           @default(0) @map("so_luong_ton")
+  mucTonToiThieu Int           @default(0) @map("muc_ton_toi_thieu")
+  trangThai      TrangThaiSach @default(ACTIVE) @map("trang_thai")
+  maTheLoai      String        @map("ma_the_loai") @db.VarChar(50)
+  maNXB          String        @map("ma_nxb") @db.VarChar(50)
+  maTacGia       String        @map("ma_tac_gia") @db.VarChar(50)
+  /// Bổ sung: vị trí kệ và mô tả (FE quản lý sách).
+  viTriKe        String?       @map("vi_tri_ke") @db.VarChar(100)
+  moTa           String?       @map("mo_ta") @db.Text
+
+  theLoai    TheLoai    @relation(fields: [maTheLoai], references: [maTheLoai])
+  nhaXuatBan NhaXuatBan @relation(fields: [maNXB], references: [maNXB])
+  tacGia     TacGia     @relation(fields: [maTacGia], references: [maTacGia])
+
+  chiTietHoaDons    ChiTietHoaDon[]
+  chiTietDoiTras    ChiTietDoiTra[]    @relation("SachTraLai")
+  chiTietDuocDoi    ChiTietDoiTra[]    @relation("SachDoiMoi")
+  chiTietPhieuNhaps ChiTietPhieuNhap[]
+  chiTietKiemKes    ChiTietKiemKe[]
+
+  @@index([maTheLoai])
+  @@map("sach")
+}
+
+// ───────────────────────── Khách hàng & khuyến mãi ─────────────────────────
+
+model KhachHang {
+  maKH         String   @id @map("ma_kh") @db.VarChar(50)
+  hoTen        String   @map("ho_ten") @db.VarChar(150)
+  /// Lưu dạng 10 chữ số, không khoảng trắng.
+  soDienThoai  String   @unique @map("so_dien_thoai") @db.VarChar(20)
+  email        String?  @db.VarChar(150)
+  diemTichLuy  Int      @default(0) @map("diem_tich_luy")
+  /// Bổ sung: địa chỉ, ghi chú, ngày tạo (đặc tả QLKH + FE).
+  diaChi       String?  @map("dia_chi") @db.Text
+  ghiChu       String?  @map("ghi_chu") @db.Text
+  ngayTao      DateTime @default(now()) @map("ngay_tao") @db.Timestamptz(3)
+  /// Bổ sung: xóa khách đã có giao dịch = vô hiệu hóa (state diagram khách hàng).
+  dangHoatDong Boolean  @default(true) @map("dang_hoat_dong")
+
+  hoaDons HoaDon[]
+
+  @@map("khach_hang")
+}
+
+model ChuongTrinhKhuyenMai {
+  maCTKM      String        @id @map("ma_ctkm") @db.VarChar(50)
+  tenCTKM     String        @map("ten_ctkm") @db.VarChar(200)
+  ngayBatDau  DateTime      @map("ngay_bat_dau") @db.Date
+  ngayKetThuc DateTime      @map("ngay_ket_thuc") @db.Date
+  /// RDM chỉ có phan_tram_giam; mở rộng thành loại + giá trị giảm (PERCENT/FIXED) theo FE.
+  loaiGiam    LoaiGiamGia   @map("loai_giam")
+  giaTriGiam  Decimal       @map("gia_tri_giam") @db.Decimal(14, 2)
+  /// Bổ sung: mức giảm tối đa và giá trị đơn tối thiểu (FE).
+  giamToiDa   Decimal?      @map("giam_toi_da") @db.Decimal(14, 2)
+  donToiThieu Decimal       @default(0) @map("don_toi_thieu") @db.Decimal(14, 2)
+  /// Bổ sung: phạm vi áp dụng; null = toàn cửa hàng.
+  maTheLoai   String?       @map("ma_the_loai") @db.VarChar(50)
+  moTa        String?       @map("mo_ta") @db.Text
+  /// RDM: trang_thai boolean → enum để phân biệt tạm dừng (tiếp tục được) và hủy (trạng thái cuối).
+  /// Sắp diễn ra / Đang diễn ra / Đã kết thúc suy ra từ ngày (promotions/promotion-status.ts).
+  trangThai   TrangThaiCTKM @default(ACTIVE) @map("trang_thai")
+
+  theLoai TheLoai? @relation(fields: [maTheLoai], references: [maTheLoai])
+  hoaDons HoaDon[]
+
+  @@map("chuong_trinh_khuyen_mai")
+}
+
+model MaGiamGia {
+  maCode       String      @id @map("ma_code") @db.VarChar(50)
+  loaiGiam     LoaiGiamGia @map("loai_giam")
+  giaTriGiam   Decimal     @map("gia_tri_giam") @db.Decimal(14, 2)
+  giamToiDa    Decimal?    @map("giam_toi_da") @db.Decimal(14, 2)
+  donToiThieu  Decimal     @default(0) @map("don_toi_thieu") @db.Decimal(14, 2)
+  /// RDM: so_luong_con_lai. Lưu tổng lượt + lượt đã dùng (FE cần cả hai); còn lại = hiệu.
+  soLanToiDa   Int         @map("so_lan_toi_da")
+  soLanDaDung  Int         @default(0) @map("so_lan_da_dung")
+  /// Bổ sung: ngày bắt đầu hiệu lực (FE).
+  ngayBatDau   DateTime    @map("ngay_bat_dau") @db.Date
+  hanSuDung    DateTime    @map("han_su_dung") @db.Date
+  /// Bổ sung: Đang hoạt động / Tạm ngừng (đặc tả QLKM).
+  dangHoatDong Boolean     @default(true) @map("dang_hoat_dong")
+  moTa         String?     @map("mo_ta") @db.Text
+
+  hoaDons HoaDon[]
+
+  @@map("ma_giam_gia")
+}
+
+// ───────────────────────── Bán hàng & đổi trả ─────────────────────────
+
+model HoaDon {
+  maHoaDon        String          @id @map("ma_hoa_don") @db.VarChar(50)
+  ngayLap         DateTime        @default(now()) @map("ngay_lap") @db.Timestamptz(3)
+  tongTienHang    Decimal         @map("tong_tien_hang") @db.Decimal(14, 2)
+  /// RDM: tien_giam_gia (tổng). Tách 2 phần để tra cứu lịch sử voucher; tổng = cộng hai cột.
+  tienGiamCTKM    Decimal         @default(0) @map("tien_giam_ctkm") @db.Decimal(14, 2)
+  tienGiamVoucher Decimal         @default(0) @map("tien_giam_voucher") @db.Decimal(14, 2)
+  /// Số tiền khách phải trả = tổng tiền hàng − giảm giá (backend tính).
+  thanhToanCuoi   Decimal         @map("thanh_toan_cuoi") @db.Decimal(14, 2)
+  trangThai       TrangThaiHoaDon @default(COMPLETED) @map("trang_thai")
+  maKH            String?         @map("ma_kh") @db.VarChar(50)
+  maNV            String          @map("ma_nv") @db.VarChar(50)
+  maCode          String?         @map("ma_code") @db.VarChar(50)
+  /// Bổ sung: CTKM đã áp dụng (tối đa 1).
+  maCTKM          String?         @map("ma_ctkm") @db.VarChar(50)
+  ghiChu          String?         @map("ghi_chu") @db.Text
+  /// Bổ sung: khóa yêu cầu do POS gửi (mỗi lần thanh toán một khóa) – unique để bấm 2 lần / thử lại
+  /// không tạo hóa đơn lặp.
+  maYeuCau        String?         @unique @map("ma_yeu_cau") @db.VarChar(64)
+
+  khachHang  KhachHang?            @relation(fields: [maKH], references: [maKH])
+  nhanVien   NhanVien              @relation(fields: [maNV], references: [maNV])
+  maGiamGia  MaGiamGia?            @relation(fields: [maCode], references: [maCode])
+  ctkm       ChuongTrinhKhuyenMai? @relation(fields: [maCTKM], references: [maCTKM])
+  chiTiets   ChiTietHoaDon[]
+  thanhToans ThanhToan[]
+  doiTras    PhieuDoiTra[]
+
+  @@index([ngayLap])
+  @@index([maKH])
+  @@map("hoa_don")
+}
+
+model ChiTietHoaDon {
+  maHoaDon   String  @map("ma_hoa_don") @db.VarChar(50)
+  maSach     String  @map("ma_sach") @db.VarChar(50)
+  /// Bổ sung: tên sách tại thời điểm bán – hóa đơn cũ không đổi khi sửa tên sách.
+  tenSach    String  @map("ten_sach") @db.VarChar(255)
+  soLuongBan Int     @map("so_luong_ban")
+  donGiaBan  Decimal @map("don_gia_ban") @db.Decimal(14, 2)
+  /// Phần chiết khấu hóa đơn (CTKM + voucher) phân bổ cho cả dòng – dùng tính giá hoàn khi trả.
+  giamGia    Decimal @default(0) @map("giam_gia") @db.Decimal(14, 2)
+  /// Bổ sung: giá vốn đơn vị tại thời điểm bán (= giá nhập của sách lúc bán).
+  giaVon     Decimal @map("gia_von") @db.Decimal(14, 2)
+
+  hoaDon HoaDon @relation(fields: [maHoaDon], references: [maHoaDon])
+  sach   Sach   @relation(fields: [maSach], references: [maSach])
+
+  @@id([maHoaDon, maSach])
+  @@map("chi_tiet_hoa_don")
+}
+
+model ThanhToan {
+  maThanhToan   String              @id @map("ma_thanh_toan") @db.VarChar(50)
+  ngayThanhToan DateTime            @default(now()) @map("ngay_thanh_toan") @db.Timestamptz(3)
+  /// Số tiền ghi nhận = thanh toán cuối của hóa đơn (không phải tiền khách đưa).
+  soTien        Decimal             @map("so_tien") @db.Decimal(14, 2)
+  phuongThuc    PhuongThucThanhToan @map("phuong_thuc")
+  trangThai     String              @default("SUCCESS") @map("trang_thai") @db.VarChar(50)
+  /// Bổ sung: tiền khách đưa (tiền mặt) để tính tiền thừa; không tính vào doanh thu.
+  tienKhachDua  Decimal?            @map("tien_khach_dua") @db.Decimal(14, 2)
+  maHoaDon      String              @map("ma_hoa_don") @db.VarChar(50)
+
+  hoaDon HoaDon @relation(fields: [maHoaDon], references: [maHoaDon])
+
+  @@index([maHoaDon])
+  @@map("thanh_toan")
+}
+
+model PhieuDoiTra {
+  maDoiTra     String         @id @map("ma_doi_tra") @db.VarChar(50)
+  ngayDoiTra   DateTime       @default(now()) @map("ngay_doi_tra") @db.Timestamptz(3)
+  lyDo         String         @map("ly_do") @db.Text
+  hinhThucXuLy HinhThucDoiTra @map("hinh_thuc_xu_ly")
+  /// Tiền cửa hàng hoàn cho khách.
+  tienHoanTra  Decimal        @default(0) @map("tien_hoan_tra") @db.Decimal(14, 2)
+  /// Bổ sung: tiền khách bù thêm khi đổi sang sách đắt hơn (tính vào doanh thu thuần).
+  tienKhachBu  Decimal        @default(0) @map("tien_khach_bu") @db.Decimal(14, 2)
+  maHoaDon     String         @map("ma_hoa_don") @db.VarChar(50)
+  maNV         String         @map("ma_nv") @db.VarChar(50)
+  /// Bổ sung: khóa yêu cầu chống lập phiếu lặp (giống hoa_don.ma_yeu_cau).
+  maYeuCau     String?        @unique @map("ma_yeu_cau") @db.VarChar(64)
+
+  hoaDon   HoaDon          @relation(fields: [maHoaDon], references: [maHoaDon])
+  nhanVien NhanVien        @relation(fields: [maNV], references: [maNV])
+  chiTiets ChiTietDoiTra[]
+
+  @@index([ngayDoiTra])
+  @@index([maHoaDon])
+  @@map("phieu_doi_tra")
+}
+
+model ChiTietDoiTra {
+  maDoiTra      String   @map("ma_doi_tra") @db.VarChar(50)
+  maSach        String   @map("ma_sach") @db.VarChar(50)
+  soLuongTra    Int      @map("so_luong_tra")
+  tinhTrangSach String   @map("tinh_trang_sach") @db.VarChar(100)
+  /// Đơn giá hoàn (hiển thị) = giaTriTra / soLuongTra, làm tròn 2 chữ số.
+  donGiaHoan    Decimal  @map("don_gia_hoan") @db.Decimal(14, 2)
+  /// Bổ sung: giá trị thực của phần sách trả (đồng) – tính lũy kế từ tiền thực trả của dòng hóa đơn gốc
+  /// để tổng qua nhiều lần trả không vượt và trả hết thì hoàn đủ (returns/refund.ts).
+  giaTriTra     Decimal  @map("gia_tri_tra") @db.Decimal(14, 2)
+  /// Sách đổi sang (null nếu là trả hàng). Số lượng đổi = số lượng trả.
+  maSachDoi     String?  @map("ma_sach_doi") @db.VarChar(50)
+  /// Bổ sung: giá bán sách đổi tại thời điểm đổi – căn cứ tính tiền chênh lệch.
+  donGiaSachDoi Decimal? @map("don_gia_sach_doi") @db.Decimal(14, 2)
+  /// Bổ sung: giá vốn sách đổi ra tại thời điểm đổi – cho báo cáo lợi nhuận.
+  giaVonSachDoi Decimal? @map("gia_von_sach_doi") @db.Decimal(14, 2)
+
+  phieuDoiTra PhieuDoiTra @relation(fields: [maDoiTra], references: [maDoiTra])
+  sach        Sach        @relation("SachTraLai", fields: [maSach], references: [maSach])
+  sachDoi     Sach?       @relation("SachDoiMoi", fields: [maSachDoi], references: [maSach])
+
+  @@id([maDoiTra, maSach])
+  @@map("chi_tiet_doi_tra")
+}
+
+// ───────────────────────── Nhập hàng & công nợ ─────────────────────────
+
+model NhaCungCap {
+  maNCC       String              @id @map("ma_ncc") @db.VarChar(50)
+  tenNCC      String              @map("ten_ncc") @db.VarChar(200)
+  soDienThoai String              @unique @map("so_dien_thoai") @db.VarChar(20)
+  email       String?             @db.VarChar(150)
+  diaChi      String?             @map("dia_chi") @db.Text
+  /// Bổ sung: mã số thuế, người liên hệ (FE), trạng thái hợp tác (đặc tả QLNCC).
+  maSoThue    String?             @map("ma_so_thue") @db.VarChar(20)
+  nguoiLienHe String?             @map("nguoi_lien_he") @db.VarChar(150)
+  trangThai   TrangThaiNhaCungCap @default(ACTIVE) @map("trang_thai")
+
+  phieuNhaps PhieuNhap[]
+
+  @@map("nha_cung_cap")
+}
+
+model PhieuNhap {
+  maPhieuNhap  String    @id @map("ma_phieu_nhap") @db.VarChar(50)
+  ngayNhap     DateTime  @default(now()) @map("ngay_nhap") @db.Timestamptz(3)
+  tongTien     Decimal   @map("tong_tien") @db.Decimal(14, 2)
+  /// Tổng các phiếu thanh toán NCC của phiếu nhập; cập nhật cùng transaction.
+  daThanhToan  Decimal   @default(0) @map("da_thanh_toan") @db.Decimal(14, 2)
+  maNCC        String    @map("ma_ncc") @db.VarChar(50)
+  maNV         String    @map("ma_nv") @db.VarChar(50)
+  /// Bổ sung: hạn thanh toán công nợ (cảnh báo nợ đến hạn / quá hạn).
+  hanThanhToan DateTime? @map("han_thanh_toan") @db.Date
+  ghiChu       String?   @map("ghi_chu") @db.Text
+  /// Bổ sung: khóa yêu cầu chống lập phiếu nhập lặp (cộng tồn hai lần).
+  maYeuCau     String?   @unique @map("ma_yeu_cau") @db.VarChar(64)
+
+  nhaCungCap NhaCungCap          @relation(fields: [maNCC], references: [maNCC])
+  nhanVien   NhanVien            @relation(fields: [maNV], references: [maNV])
+  chiTiets   ChiTietPhieuNhap[]
+  thanhToans PhieuThanhToanNCC[]
+
+  @@index([maNCC])
+  @@index([ngayNhap])
+  @@map("phieu_nhap")
+}
+
+model ChiTietPhieuNhap {
+  maPhieuNhap String  @map("ma_phieu_nhap") @db.VarChar(50)
+  maSach      String  @map("ma_sach") @db.VarChar(50)
+  soLuongNhap Int     @map("so_luong_nhap")
+  donGiaNhap  Decimal @map("don_gia_nhap") @db.Decimal(14, 2)
+
+  phieuNhap PhieuNhap @relation(fields: [maPhieuNhap], references: [maPhieuNhap])
+  sach      Sach      @relation(fields: [maSach], references: [maSach])
+
+  @@id([maPhieuNhap, maSach])
+  @@map("chi_tiet_phieu_nhap")
+}
+
+model PhieuThanhToanNCC {
+  maThanhToanNCC  String              @id @map("ma_thanh_toan_ncc") @db.VarChar(50)
+  ngayThanhToan   DateTime            @default(now()) @map("ngay_thanh_toan") @db.Timestamptz(3)
+  soTienThanhToan Decimal             @map("so_tien_thanh_toan") @db.Decimal(14, 2)
+  phuongThuc      PhuongThucThanhToan @map("phuong_thuc")
+  ghiChu          String?             @map("ghi_chu") @db.Text
+  /// Bắt buộc chọn phiếu nhập (quyết định review #8). NCC suy ra từ phiếu nhập.
+  maPhieuNhap     String              @map("ma_phieu_nhap") @db.VarChar(50)
+  maNV            String              @map("ma_nv") @db.VarChar(50)
+  /// Bổ sung: khóa yêu cầu chống ghi thanh toán lặp. Null với khoản trả trước tạo cùng phiếu nhập.
+  maYeuCau        String?             @unique @map("ma_yeu_cau") @db.VarChar(64)
+
+  phieuNhap PhieuNhap @relation(fields: [maPhieuNhap], references: [maPhieuNhap])
+  nhanVien  NhanVien  @relation(fields: [maNV], references: [maNV])
+
+  @@index([maPhieuNhap])
+  @@map("phieu_thanh_toan_ncc")
+}
+
+// ───────────────────────── Kho ─────────────────────────
+
+/// Phiếu kiểm kê – gộp luôn điều chỉnh kho: lưu phiếu = cân bằng tồn kho ngay.
+model PhieuKiemKe {
+  maKiemKe   String   @id @map("ma_kiem_ke") @db.VarChar(50)
+  ngayKiemKe DateTime @default(now()) @map("ngay_kiem_ke") @db.Timestamptz(3)
+  ghiChu     String?  @map("ghi_chu") @db.Text
+  maNV       String   @map("ma_nv") @db.VarChar(50)
+  /// Bổ sung: khóa yêu cầu chống áp dụng một phiếu nhiều lần.
+  maYeuCau   String?  @unique @map("ma_yeu_cau") @db.VarChar(64)
+
+  nhanVien NhanVien        @relation(fields: [maNV], references: [maNV])
+  chiTiets ChiTietKiemKe[]
+
+  @@map("phieu_kiem_ke")
+}
+
+model ChiTietKiemKe {
+  maKiemKe       String  @map("ma_kiem_ke") @db.VarChar(50)
+  maSach         String  @map("ma_sach") @db.VarChar(50)
+  soLuongHeThong Int     @map("so_luong_he_thong")
+  soLuongThucTe  Int     @map("so_luong_thuc_te")
+  /// Bắt buộc khi có chênh lệch (kiểm tra ở service).
+  lyDo           String? @map("ly_do") @db.Text
+
+  phieuKiemKe PhieuKiemKe @relation(fields: [maKiemKe], references: [maKiemKe])
+  sach        Sach        @relation(fields: [maSach], references: [maSach])
+
+  @@id([maKiemKe, maSach])
+  @@map("chi_tiet_kiem_ke")
+}
+
+// ───────────────────────── Hệ thống ─────────────────────────
+
+/// Bổ sung: lịch sử sao lưu (đặc tả QLHT – Sao lưu, bước 5 "ghi nhận lịch sử sao lưu").
+model BanSaoLuu {
+  maSaoLuu      String   @id @map("ma_sao_luu") @db.VarChar(50)
+  tenTep        String   @map("ten_tep") @db.VarChar(255)
+  ngayTao       DateTime @default(now()) @map("ngay_tao") @db.Timestamptz(3)
+  kichThuocByte Int      @map("kich_thuoc_byte")
+  ghiChu        String?  @map("ghi_chu") @db.Text
+  maNV          String   @map("ma_nv") @db.VarChar(50)
+
+  nhanVien NhanVien @relation(fields: [maNV], references: [maNV])
+
+  @@map("ban_sao_luu")
 }

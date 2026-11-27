@@ -2,9 +2,22 @@ import { API_ENDPOINTS, shouldUseMock } from "@/config/api";
 import { generateCode } from "@/lib/format";
 import { httpClient } from "@/lib/http-client";
 import { getMockDb, saveMockDb } from "@/mocks/store";
-import type { Customer, Invoice, ReturnOrder } from "@/types";
+import type {
+  CartRequest,
+  Customer,
+  Invoice,
+  InvoicePreview,
+  ReturnOrder,
+  ReturnPreview,
+  ReturnRequest,
+} from "@/types";
 
 export const salesService = {
+  /** Xem trước giỏ hàng (chỉ API thật): giá, khuyến mãi, tổng tiền do backend tính, không ghi DB. */
+  async previewInvoice(cart: CartRequest): Promise<InvoicePreview> {
+    return httpClient.post<InvoicePreview>(API_ENDPOINTS.invoicePreview, cart);
+  },
+
   async getInvoices(): Promise<Invoice[]> {
     if (!shouldUseMock("sales")) {
       return httpClient.get<Invoice[]>(API_ENDPOINTS.invoices);
@@ -12,8 +25,16 @@ export const salesService = {
     return [...getMockDb().invoices].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
+  /**
+   * API thật: backend chỉ dùng mã sách, số lượng, khách, CTKM, voucher, phương thức, tiền khách đưa;
+   * các số tiền / người lập trong payload bị bỏ qua. `requestKey` chống tạo lặp; `expectedTotal`
+   * để backend từ chối nếu tổng tiền đã đổi so với số khách đang thấy.
+   */
   async createInvoice(
-    payload: Omit<Invoice, "id" | "code" | "createdAt" | "status">,
+    payload: Omit<Invoice, "id" | "code" | "createdAt" | "status"> & {
+      requestKey?: string;
+      expectedTotal?: number;
+    },
   ): Promise<Invoice> {
     if (!shouldUseMock("sales")) {
       return httpClient.post<Invoice>(API_ENDPOINTS.invoices, payload);
@@ -78,17 +99,31 @@ export const salesService = {
     return newInvoice;
   },
 
+  /** Xem trước phiếu đổi/trả (chỉ API thật): giá trị trả, tiền hoàn / khách bù do backend tính. */
+  async previewReturn(payload: ReturnRequest): Promise<ReturnPreview> {
+    return httpClient.post<ReturnPreview>(API_ENDPOINTS.returnPreview, payload);
+  },
+
+  // Đổi/trả dùng cờ riêng "returns" (tách khỏi "sales").
   async getReturns(): Promise<ReturnOrder[]> {
-    if (!shouldUseMock("sales")) {
+    if (!shouldUseMock("returns")) {
       return httpClient.get<ReturnOrder[]>(API_ENDPOINTS.returns);
     }
     return [...getMockDb().returns].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
+  /**
+   * API thật: backend chỉ dùng hóa đơn, loại, sách + số lượng + tình trạng, sách đổi, lý do, requestKey;
+   * đơn giá / tiền hoàn / chênh lệch / người xử lý trong payload bị bỏ qua.
+   */
   async createReturn(
-    payload: Omit<ReturnOrder, "id" | "code" | "createdAt" | "status">,
+    payload: Omit<ReturnOrder, "id" | "code" | "createdAt" | "status"> & {
+      requestKey?: string;
+      expectedRefundAmount?: number;
+      expectedExtraPayment?: number;
+    },
   ): Promise<ReturnOrder> {
-    if (!shouldUseMock("sales")) {
+    if (!shouldUseMock("returns")) {
       return httpClient.post<ReturnOrder>(API_ENDPOINTS.returns, payload);
     }
 

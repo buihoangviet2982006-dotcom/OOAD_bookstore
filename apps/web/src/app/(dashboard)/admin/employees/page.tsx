@@ -6,7 +6,7 @@ import { Badge, Drawer, Modal, PageHeader } from "@/components/ui";
 import { BRAND_CONFIG } from "@/config/brand";
 import { ROLE_LABELS } from "@/config/navigation";
 import { useToast } from "@/context/ToastContext";
-import { formatCurrency, formatDate } from "@/lib/format";
+import { formatCurrency, formatDate, toNumberInput, type NumberInput } from "@/lib/format";
 import { adminService } from "@/services";
 import type { Employee, UserRole } from "@/types";
 
@@ -25,9 +25,10 @@ export default function EmployeesPage() {
   const [positionTitle, setPositionTitle] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
-  const [branchName, setBranchName] = useState<string>(BRAND_CONFIG.branches[0].name);
+  const [branchName, setBranchName] = useState<string>(BRAND_CONFIG.store.name);
   const [joinDate, setJoinDate] = useState("2026-11-26");
-  const [baseSalary, setBaseSalary] = useState(9000000);
+  const [baseSalary, setBaseSalary] = useState<NumberInput>(9000000);
+  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<Employee["status"]>("WORKING");
   const [address, setAddress] = useState("");
 
@@ -37,7 +38,13 @@ export default function EmployeesPage() {
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
+    // Lỗi tải (mất kết nối, hết phiên…) hiện thành thông báo thay vì bảng trống im lặng.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = useMemo(() => {
@@ -61,7 +68,7 @@ export default function EmployeesPage() {
     setPositionTitle("Nhân viên bán hàng");
     setPhone("");
     setEmail("");
-    setBranchName(BRAND_CONFIG.branches[0].name);
+    setBranchName(BRAND_CONFIG.store.name);
     setJoinDate("2026-11-26");
     setBaseSalary(9000000);
     setStatus("WORKING");
@@ -86,22 +93,34 @@ export default function EmployeesPage() {
 
   const handleSave = async (ev: React.FormEvent) => {
     ev.preventDefault();
-    await adminService.saveEmployee({
-      id: editing?.id,
-      fullName,
-      role,
-      positionTitle,
-      phone,
-      email,
-      branchName,
-      joinDate,
-      baseSalary,
-      status,
-      address,
-    });
-    await loadAll();
-    setFormOpen(false);
-    showToast(editing ? "Đã cập nhật hồ sơ nhân viên" : "Đã thêm nhân viên mới");
+    if (saving) return;
+    if (baseSalary === "") {
+      showToast("Vui lòng nhập lương cơ bản (có thể là 0).", "warning");
+      return;
+    }
+    setSaving(true);
+    try {
+      await adminService.saveEmployee({
+        id: editing?.id,
+        fullName,
+        role,
+        positionTitle,
+        phone,
+        email,
+        branchName,
+        joinDate,
+        baseSalary: Number(baseSalary),
+        status,
+        address,
+      });
+      await loadAll();
+      setFormOpen(false);
+      showToast(editing ? "Đã cập nhật hồ sơ nhân viên" : "Đã thêm nhân viên mới");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Không lưu được hồ sơ nhân viên.", "error");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -202,9 +221,14 @@ export default function EmployeesPage() {
                       type="button"
                       onClick={async () => {
                         if (!window.confirm(`Xóa hồ sơ nhân viên "${emp.fullName}"?`)) return;
-                        await adminService.deleteEmployee(emp.id);
-                        loadAll();
-                        showToast("Đã xóa hồ sơ nhân viên", "info");
+                        try {
+                          // Có tài khoản/chứng từ: backend chuyển "Đã thôi việc" + khóa tài khoản.
+                          const message = await adminService.deleteEmployee(emp.id);
+                          await loadAll();
+                          showToast(message ?? "Đã xóa hồ sơ nhân viên", "info");
+                        } catch (err) {
+                          showToast(err instanceof Error ? err.message : "Không xóa được nhân viên.", "error");
+                        }
                       }}
                       className="rounded-lg border border-[#E6E8E5] p-1.5 text-zinc-500 hover:bg-[#FEE2E2] hover:text-[#B91C1C]"
                     >
@@ -323,7 +347,7 @@ export default function EmployeesPage() {
               <input
                 type="number"
                 value={baseSalary}
-                onChange={(e) => setBaseSalary(Number(e.target.value))}
+                onChange={(e) => setBaseSalary(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
               />
             </div>
@@ -370,9 +394,10 @@ export default function EmployeesPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={saving}
+              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D] disabled:opacity-50"
             >
-              Lưu hồ sơ
+              {saving ? "Đang lưu..." : "Lưu hồ sơ"}
             </button>
           </div>
         </form>

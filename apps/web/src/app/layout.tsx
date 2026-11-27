@@ -3,7 +3,7 @@ import { Providers } from "@/components/layout/Providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Mộc Books — Quản lý Nhà sách",
+  title: "Nhà sách bé bi — Quản lý nhà sách",
   description: "Hệ thống quản lý bán hàng, kho sách, công nợ và điều hành nhà sách",
 };
 

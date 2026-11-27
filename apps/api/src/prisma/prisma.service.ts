@@ -8,9 +8,12 @@ export class PrismaService
   implements OnModuleInit, OnModuleDestroy
 {
   constructor() {
-    const connectionString =
-      process.env.DATABASE_URL ??
-      'postgresql://bookstore:bookstore_secret@localhost:5432/ooad_bookstore?schema=public';
+    // Không fallback sang DB mặc định để tránh kết nối nhầm PostgreSQL khác trên máy.
+    // Local: apps/api/.env (ConfigModule nạp). Docker: Compose truyền biến này.
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error('Thiếu biến môi trường DATABASE_URL (xem apps/api/.env.example).');
+    }
     const adapter = new PrismaPg({ connectionString });
     super({ adapter });
   }

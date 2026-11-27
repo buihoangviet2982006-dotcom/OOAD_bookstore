@@ -93,6 +93,34 @@ export interface InvoiceItem {
   quantity: number;
   unitPrice: number;
   subtotal: number;
+  /** Chiết khấu hóa đơn đã phân bổ cho dòng (API thật). */
+  discount?: number;
+  /** Số cuốn đã đổi/trả qua các phiếu (API thật). */
+  returnedQuantity?: number;
+}
+
+/** Kết quả xem trước giỏ hàng từ backend (POST /invoices/preview). */
+export interface InvoicePreview {
+  valid: boolean;
+  messages: string[];
+  lines: (InvoiceItem & { stock: number })[];
+  subtotal: number;
+  promotion: { id: string; name: string; applied: boolean; amount: number } | null;
+  voucher: { code: string; applied: boolean; amount: number } | null;
+  discountAmount: number;
+  totalAmount: number;
+  amountPaid: number;
+  changeAmount: number;
+}
+
+/** Dữ liệu giỏ hàng gửi backend để xem trước – chỉ mã sách + số lượng, không gửi giá. */
+export interface CartRequest {
+  items: { bookId: string; quantity: number }[];
+  customerId?: string | null;
+  promotionId?: string;
+  voucherCode?: string;
+  paymentMethod: PaymentMethod;
+  amountPaid?: number;
 }
 
 export interface Invoice {
@@ -116,6 +144,8 @@ export interface Invoice {
   paymentMethod: PaymentMethod;
   status: InvoiceStatus;
   note?: string;
+  /** Hạn đổi/trả YYYY-MM-DD (hết ngày, giờ Việt Nam) – API thật. */
+  returnDeadline?: string;
 }
 
 export type ReturnType = "RETURN" | "EXCHANGE";
@@ -128,6 +158,36 @@ export interface ReturnOrderItem {
   quantity: number;
   unitPrice: number;
   condition: string;
+  /** Giá trị thực của phần trả (đồng) – API thật. */
+  value?: number;
+}
+
+/** Xem trước phiếu đổi/trả từ backend (POST /returns/preview). */
+export interface ReturnPreview {
+  valid: boolean;
+  messages: string[];
+  deadline: string;
+  lines: {
+    bookId: string;
+    title: string;
+    quantity: number;
+    purchasedQuantity: number;
+    alreadyReturned: number;
+    value: number;
+  }[];
+  returnedValue: number;
+  exchangeBook: { id: string; title: string; unitPrice: number; stock: number } | null;
+  newBooksValue: number;
+  refundAmount: number;
+  extraPayment: number;
+}
+
+/** Dữ liệu gửi backend để xem trước / lập phiếu đổi trả – không gửi đơn giá hay tiền hoàn. */
+export interface ReturnRequest {
+  invoiceId: string;
+  type: ReturnType;
+  returnItems: { bookId: string; quantity: number; condition?: string }[];
+  exchangeBookId?: string;
 }
 
 export interface ReturnOrder {
@@ -146,6 +206,8 @@ export interface ReturnOrder {
   exchangeQuantity?: number;
   exchangePriceDiff: number; // < 0 hoàn tiền khách, > 0 khách bù thêm
   refundAmount: number;
+  /** Tiền khách bù thêm (API thật, lưu riêng với tiền hoàn). */
+  extraPayment?: number;
   status: ReturnStatus;
   handledBy: string;
 }
@@ -239,10 +301,15 @@ export interface PromotionCampaign {
   maxDiscountAmount?: number;
   minOrderValue: number;
   applicableCategory?: string;
+  /** Mã thể loại áp dụng; "" = toàn cửa hàng (backend dùng trường này, `applicableCategory` chỉ để hiển thị). */
+  applicableCategoryId?: string;
   startDate: string;
   endDate: string;
   status: PromotionStatus;
 }
+
+/** Trạng thái voucher do backend suy ra (hết hạn, tạm ngừng, hết lượt…). */
+export type VoucherStatus = "ACTIVE" | "SCHEDULED" | "PAUSED" | "USED_UP" | "EXPIRED";
 
 export interface Voucher {
   id: string;
@@ -257,6 +324,7 @@ export interface Voucher {
   startDate: string;
   endDate: string;
   isActive: boolean;
+  status?: VoucherStatus;
 }
 
 export interface VoucherUsage {
@@ -292,6 +360,9 @@ export interface SystemAccount {
   email: string;
   role: UserRole;
   status: "ACTIVE" | "LOCKED";
+  /** Trạng thái nhân viên sở hữu (tài khoản của người đã thôi việc không mở khóa được). */
+  employeeStatus?: Employee["status"];
+  failedLoginCount?: number;
   lastLogin: string | null;
   createdAt: string;
 }
@@ -300,6 +371,9 @@ export interface RolePermissionItem {
   moduleKey: string;
   moduleName: string;
   group: string;
+  /** Ghi chú giới hạn (vd "chỉ xem chương trình đang áp dụng"). */
+  note: string | null;
+  /** Ma trận chỉ xem – phản ánh RBAC cố định của backend. */
   permissions: Record<
     UserRole,
     {
@@ -307,7 +381,6 @@ export interface RolePermissionItem {
       create: boolean;
       edit: boolean;
       delete: boolean;
-      export: boolean;
     }
   >;
 }
@@ -324,9 +397,67 @@ export interface BackupRecord {
 }
 
 export interface RevenuePoint {
+  /** Ngày YYYY-MM-DD (giờ Việt Nam). */
+  date: string;
+  /** dd/MM */
   label: string;
   revenue: number;
   cost: number;
   profit: number;
   orders: number;
+  booksSold: number;
+}
+
+/** Tổng kỳ báo cáo – công thức xem docs/database.md › Báo cáo. */
+export interface RevenueTotals {
+  invoiceAmount: number;
+  exchangeIn: number;
+  refunds: number;
+  revenue: number;
+  saleCost: number;
+  returnedCost: number;
+  exchangeOutCost: number;
+  cost: number;
+  profit: number;
+  orders: number;
+  booksSold: number;
+}
+
+export interface RevenueReport {
+  from: string;
+  to: string;
+  previousFrom: string;
+  previousTo: string;
+  totals: RevenueTotals;
+  previousTotals: RevenueTotals;
+  series: RevenuePoint[];
+}
+
+export interface BestsellerRow {
+  bookId: string;
+  title: string;
+  soldQty: number;
+  returnedQty: number;
+  exchangedOutQty: number;
+  netQty: number;
+  revenue: number;
+}
+
+export interface DashboardCard {
+  key: string;
+  label: string;
+  value: number;
+  format: "currency" | "number";
+  /** Giá trị kỳ trước; null = số liệu hiện tại, không so kỳ. */
+  previous: number | null;
+  series: number[] | null;
+}
+
+export interface DashboardSummary {
+  from: string;
+  to: string;
+  previousFrom: string;
+  previousTo: string;
+  role: UserRole;
+  cards: DashboardCard[];
 }

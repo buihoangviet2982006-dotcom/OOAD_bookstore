@@ -1,15 +1,17 @@
 import { API_ENDPOINTS, shouldUseMock } from "@/config/api";
 import { httpClient } from "@/lib/http-client";
-import { REVENUE_SERIES_7D } from "@/mocks/seed";
-import { getMockDb, resetMockDb, saveMockDb } from "@/mocks/store";
+import { getMockDb, saveMockDb } from "@/mocks/store";
 import type {
   BackupRecord,
+  BestsellerRow,
+  DashboardSummary,
   Employee,
   PromotionCampaign,
-  RevenuePoint,
+  RevenueReport,
   RolePermissionItem,
   Supplier,
   SystemAccount,
+  UserRole,
   Voucher,
   VoucherUsage,
 } from "@/types";
@@ -163,25 +165,37 @@ export const adminService = {
     return created;
   },
 
-  async deleteEmployee(id: string): Promise<void> {
+  /** Trả về thông báo của backend: đã xóa hẳn hoặc đã chuyển "Đã thôi việc". */
+  async deleteEmployee(id: string): Promise<string | undefined> {
     if (!shouldUseMock("employees")) {
-      await httpClient.delete(`${API_ENDPOINTS.employees}/${id}`);
-      return;
+      const res = await httpClient.delete<{ action: "DELETED" | "RESIGNED"; message: string }>(
+        `${API_ENDPOINTS.employees}/${id}`,
+      );
+      return res.message;
     }
     const db = getMockDb();
     db.employees = db.employees.filter((e) => e.id !== id);
     saveMockDb(db);
   },
 
-  // Reports
-  async getRevenueSeries(): Promise<RevenuePoint[]> {
-    if (!shouldUseMock("reports")) {
-      return httpClient.get<RevenuePoint[]>(`${API_ENDPOINTS.reports}/revenue`);
-    }
-    return REVENUE_SERIES_7D;
+  // Reports – chỉ có số liệu thật từ API (không có dữ liệu mẫu cho báo cáo).
+  async getRevenueReport(from: string, to: string): Promise<RevenueReport> {
+    requireApi("reports");
+    return httpClient.get<RevenueReport>(`${API_ENDPOINTS.reports}/revenue`, { params: { from, to } });
   },
 
-  // System Administration
+  async getBestsellers(from: string, to: string): Promise<BestsellerRow[]> {
+    requireApi("reports");
+    return httpClient.get<BestsellerRow[]>(`${API_ENDPOINTS.reports}/bestsellers`, { params: { from, to } });
+  },
+
+  /** Chỉ số trang Tổng quan – backend chọn số liệu theo vai trò người đăng nhập. */
+  async getDashboardSummary(from: string, to: string): Promise<DashboardSummary> {
+    requireApi("reports");
+    return httpClient.get<DashboardSummary>(API_ENDPOINTS.dashboardSummary, { params: { from, to } });
+  },
+
+  // System Administration – chỉ Quản lý.
   async getAccounts(): Promise<SystemAccount[]> {
     if (!shouldUseMock("system")) {
       return httpClient.get<SystemAccount[]>(API_ENDPOINTS.accounts);
@@ -189,67 +203,44 @@ export const adminService = {
     return [...getMockDb().accounts];
   },
 
-  async saveAccount(
-    payload: Omit<SystemAccount, "id" | "lastLogin" | "createdAt"> & { id?: string },
+  async createAccount(payload: {
+    employeeId: string;
+    username: string;
+    email?: string;
+    role: UserRole;
+    password: string;
+  }): Promise<SystemAccount> {
+    requireApi("system");
+    return httpClient.post<SystemAccount>(API_ENDPOINTS.accounts, payload);
+  },
+
+  async updateAccount(
+    id: string,
+    payload: { username: string; email: string; role: UserRole },
   ): Promise<SystemAccount> {
-    if (!shouldUseMock("system")) {
-      return payload.id
-        ? httpClient.patch<SystemAccount>(`${API_ENDPOINTS.accounts}/${payload.id}`, payload)
-        : httpClient.post<SystemAccount>(API_ENDPOINTS.accounts, payload);
-    }
-    const db = getMockDb();
-    if (payload.id) {
-      const idx = db.accounts.findIndex((a) => a.id === payload.id);
-      if (idx >= 0) {
-        db.accounts[idx] = { ...db.accounts[idx], ...payload };
-        saveMockDb(db);
-        return db.accounts[idx];
-      }
-    }
-    const created: SystemAccount = {
-      ...payload,
-      id: `ACC-${Date.now()}`,
-      lastLogin: null,
-      createdAt: new Date().toISOString(),
-    };
-    db.accounts.unshift(created);
-    saveMockDb(db);
-    return created;
+    requireApi("system");
+    return httpClient.patch<SystemAccount>(`${API_ENDPOINTS.accounts}/${id}`, payload);
   },
 
-  async toggleAccountStatus(id: string): Promise<SystemAccount | null> {
-    if (!shouldUseMock("system")) {
-      return httpClient.patch<SystemAccount>(`${API_ENDPOINTS.accounts}/${id}/toggle-status`);
-    }
-    const db = getMockDb();
-    const acc = db.accounts.find((a) => a.id === id);
-    if (!acc) return null;
-    acc.status = acc.status === "ACTIVE" ? "LOCKED" : "ACTIVE";
-    saveMockDb(db);
-    return acc;
+  async setAccountLocked(id: string, locked: boolean): Promise<SystemAccount> {
+    requireApi("system");
+    return httpClient.post<SystemAccount>(`${API_ENDPOINTS.accounts}/${id}/${locked ? "lock" : "unlock"}`);
   },
 
-  async resetAccountPassword(id: string, tempPassword: string): Promise<void> {
-    if (!shouldUseMock("system")) {
-      await httpClient.post(`${API_ENDPOINTS.accounts}/${id}/reset-password`, { tempPassword });
-    }
+  async resetAccountPassword(id: string, newPassword: string): Promise<string> {
+    requireApi("system");
+    const res = await httpClient.post<{ message: string }>(`${API_ENDPOINTS.accounts}/${id}/reset-password`, {
+      newPassword,
+    });
+    return res.message;
   },
 
+  /** Ma trận quyền chỉ xem – không có API lưu. */
   async getPermissions(): Promise<RolePermissionItem[]> {
     if (!shouldUseMock("system")) {
       return httpClient.get<RolePermissionItem[]>(API_ENDPOINTS.permissions);
     }
     return [...getMockDb().permissions];
-  },
-
-  async savePermissions(items: RolePermissionItem[]): Promise<void> {
-    if (!shouldUseMock("system")) {
-      await httpClient.put(API_ENDPOINTS.permissions, { items });
-      return;
-    }
-    const db = getMockDb();
-    db.permissions = items;
-    saveMockDb(db);
   },
 
   async getBackups(): Promise<BackupRecord[]> {
@@ -259,46 +250,16 @@ export const adminService = {
     return [...getMockDb().backups].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
-  async createBackup(createdBy: string, note?: string): Promise<{ record: BackupRecord; snapshot: unknown }> {
-    if (!shouldUseMock("system")) {
-      return httpClient.post<{ record: BackupRecord; snapshot: unknown }>(API_ENDPOINTS.backups, {
-        note,
-      });
-    }
-    const db = getMockDb();
-    const now = new Date();
-    const stamp = now.toISOString().replace(/[:.]/g, "_").slice(0, 19);
-    const record: BackupRecord = {
-      id: `BKP-${Date.now()}`,
-      fileName: `mocbooks_backup_${stamp}.json`,
-      createdAt: now.toISOString(),
-      createdBy,
-      sizeLabel: "15.1 MB",
-      type: "MANUAL",
-      status: "SUCCESS",
-      note: note || "Sao lưu thủ công bởi quản trị viên",
-    };
-    db.backups.unshift(record);
-    saveMockDb(db);
-    return { record, snapshot: db };
-  },
-
-  async restoreBackup(idOrData?: string | object): Promise<void> {
-    if (!shouldUseMock("system")) {
-      await httpClient.post(`${API_ENDPOINTS.backups}/restore`, { payload: idOrData });
-      return;
-    }
-    if (typeof idOrData === "object" && idOrData !== null && "books" in idOrData) {
-      saveMockDb(idOrData as ReturnType<typeof getMockDb>);
-      return;
-    }
-    const db = getMockDb();
-    if (typeof idOrData === "string") {
-      const target = db.backups.find((b) => b.id === idOrData);
-      if (target) target.status = "RESTORED";
-      saveMockDb(db);
-    } else {
-      resetMockDb();
-    }
+  /** Xuất JSON dữ liệu nghiệp vụ + ghi lịch sử. Phục hồi chưa triển khai (không có hàm restore). */
+  async createBackup(note?: string): Promise<{ record: BackupRecord; snapshot: unknown }> {
+    requireApi("system");
+    return httpClient.post<{ record: BackupRecord; snapshot: unknown }>(API_ENDPOINTS.backups, { note });
   },
 };
+
+/** Chức năng chỉ chạy với backend thật – chế độ Mock báo lỗi thay vì giả lập thành công. */
+function requireApi(moduleKey: "reports" | "system"): void {
+  if (shouldUseMock(moduleKey)) {
+    throw new Error("Chức năng này chỉ khả dụng khi kết nối API thật (không có dữ liệu mẫu).");
+  }
+}
