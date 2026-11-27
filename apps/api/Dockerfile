@@ -24,4 +24,6 @@ COPY --from=builder /app/prisma.config.ts ./prisma.config.ts
 
 EXPOSE 3001
 
-CMD ["node", "dist/main.js"]
+# Áp migration trước khi phục vụ; migrate lỗi → container thoát (không khởi động API như thể thành công).
+# Không seed tự động – seed chạy tay: docker compose exec api npx prisma db seed
+CMD ["sh", "-c", "./node_modules/.bin/prisma migrate deploy && exec node dist/main.js"]

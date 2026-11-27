@@ -1,22 +1,15 @@
+/**
+ * Thông tin nhà sách – hệ thống demo MỘT cửa hàng (khớp `STORE_BRANCH` ở backend: auth.constants.ts).
+ * Dùng chung cho sidebar, trang đăng nhập, hóa đơn in và tên tệp xuất.
+ */
 export const BRAND_CONFIG = {
   name: "Nhà sách bé bi",
   subtitle: "QUẢN LÝ NHÀ SÁCH",
-  companyName: "Hệ thống Nhà sách Mộc Books",
-  hotline: "1900 6886",
-  email: "hotro@mocbooks.vn",
-  taxCode: "0316894210",
-  branches: [
-    {
-      id: "BR-01",
-      name: "Chi nhánh trung tâm",
-      address: "126 Nguyễn Thị Minh Khai, Quận 3, TP.HCM",
-      status: "Cửa hàng đang hoạt động",
-    },
-    {
-      id: "BR-02",
-      name: "Chi nhánh Cầu Giấy",
-      address: "88 Xuân Thủy, Cầu Giấy, Hà Nội",
-      status: "Cửa hàng đang hoạt động",
-    },
-  ],
+  /** Tiền tố tên tệp CSV / JSON xuất ra. */
+  fileSlug: "nha-sach-be-bi",
+  store: {
+    id: "BR-01",
+    name: "Chi nhánh trung tâm",
+    address: "273 An Dương Vương, Phường Chợ Quán, TP.HCM",
+  },
 } as const;

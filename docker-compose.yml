@@ -1,7 +1,10 @@
+# Chạy:   docker compose up -d --build        (biến lấy từ .env ở root – xem .env.example)
+# Seed:   docker compose exec api npx prisma db seed   (chạy tay khi cần, không tự chạy mỗi lần khởi động)
+# Môi trường thứ hai song song: đổi CONTAINER_PREFIX, các *_PORT và dùng `docker compose -p <tên khác>`.
 services:
   postgres:
     image: postgres:17-alpine
-    container_name: ooad_bookstore_postgres
+    container_name: ${CONTAINER_PREFIX:-ooad_bookstore}_postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-bookstore}
@@ -23,22 +26,30 @@ services:
     build:
       context: ./apps/api
       dockerfile: Dockerfile
-    container_name: ooad_bookstore_api
+    container_name: ${CONTAINER_PREFIX:-ooad_bookstore}_api
     restart: unless-stopped
     environment:
       NODE_ENV: production
-      PORT: ${API_PORT:-3001}
+      # Cổng BÊN TRONG container luôn 3001; API_PORT chỉ đổi cổng trên máy host.
+      PORT: 3001
       DATABASE_URL: postgresql://${POSTGRES_USER:-bookstore}:${POSTGRES_PASSWORD:-bookstore_secret}@postgres:5432/${POSTGRES_DB:-ooad_bookstore}?schema=public
+      # Bắt buộc, đặt trong .env ở root. Thiếu thì API báo lỗi khi khởi động (không có secret mặc định).
+      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_EXPIRES_MINUTES: ${JWT_EXPIRES_MINUTES:-480}
+      # NODE_ENV=production → OTP quên mật khẩu KHÔNG in ra console, chức năng báo chưa cấu hình kênh gửi.
+    # Container chạy `prisma migrate deploy` trước; migrate lỗi thì container dừng, API không khởi động.
     ports:
       - "${API_PORT:-3001}:3001"
     depends_on:
       postgres:
         condition: service_healthy
     healthcheck:
+      # /health trả 503 khi mất DB → unhealthy.
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 30s
     networks:
       - bookstore_net
 
@@ -47,14 +58,13 @@ services:
       context: ./apps/web
       dockerfile: Dockerfile
       args:
+        # URL API mà TRÌNH DUYỆT gọi tới (cổng host của API), được nhúng vào bản build Next.js.
         NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-    container_name: ooad_bookstore_web
+    container_name: ${CONTAINER_PREFIX:-ooad_bookstore}_web
     restart: unless-stopped
     environment:
       NODE_ENV: production
       PORT: 3000
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-      API_INTERNAL_URL: http://api:3001
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:

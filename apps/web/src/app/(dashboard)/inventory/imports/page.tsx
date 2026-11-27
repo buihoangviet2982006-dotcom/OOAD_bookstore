@@ -5,7 +5,7 @@ import { AlertTriangle, Banknote, Eye, Plus, Search, Trash2 } from "lucide-react
 import { Badge, Drawer, Modal, PageHeader } from "@/components/ui";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
-import { daysUntil, formatCurrency, formatDate, formatDateTime } from "@/lib/format";
+import { daysUntil, formatCurrency, formatDate, formatDateTime, toNumberInput, type NumberInput } from "@/lib/format";
 import { adminService, inventoryService } from "@/services";
 import type {
   Book,
@@ -35,9 +35,10 @@ export default function ImportsAndDebtPage() {
   const [poSupplierId, setPoSupplierId] = useState("");
   const [poItems, setPoItems] = useState<PurchaseOrderItem[]>([]);
   const [pickBookId, setPickBookId] = useState("");
-  const [pickQty, setPickQty] = useState(20);
-  const [pickPrice, setPickPrice] = useState(75000);
-  const [poPaidAmount, setPoPaidAmount] = useState(0);
+  const [pickQty, setPickQty] = useState<NumberInput>(20);
+  const [pickPrice, setPickPrice] = useState<NumberInput>(75000);
+  // "" = ô đang để trống (cho phép xóa hết để nhập lại); khi lưu coi như 0.
+  const [poPaidAmount, setPoPaidAmount] = useState<number | "">(0);
   const [poDueDate, setPoDueDate] = useState("2026-12-15");
   const [poNote, setPoNote] = useState("");
 
@@ -45,9 +46,15 @@ export default function ImportsAndDebtPage() {
   const [payOpen, setPayOpen] = useState(false);
   const [paySupplierId, setPaySupplierId] = useState("");
   const [payPoId, setPayPoId] = useState("");
-  const [payAmount, setPayAmount] = useState(0);
+  const [payAmount, setPayAmount] = useState<NumberInput>(0);
   const [payMethod, setPayMethod] = useState<PaymentMethod>("TRANSFER");
   const [payNote, setPayNote] = useState("");
+
+  // Khóa chống lặp (giữ nguyên khi lỗi, đổi sau khi thành công) + khóa nút khi đang gửi.
+  const [poRequestKey, setPoRequestKey] = useState(() => crypto.randomUUID());
+  const [payRequestKey, setPayRequestKey] = useState(() => crypto.randomUUID());
+  const [poSubmitting, setPoSubmitting] = useState(false);
+  const [paySubmitting, setPaySubmitting] = useState(false);
 
   const loadAll = async () => {
     const [pos, sups, pays, bks] = await Promise.all([
@@ -60,7 +67,9 @@ export default function ImportsAndDebtPage() {
     setSuppliers(sups);
     setPayments(pays);
     setBooks(bks);
-    if (sups[0] && !poSupplierId) setPoSupplierId(sups[0].id);
+    // Chỉ NCC đang hợp tác được lập phiếu nhập mới.
+    const firstActive = sups.find((s) => s.status === "ACTIVE");
+    if (firstActive && !poSupplierId) setPoSupplierId(firstActive.id);
     if (bks[0] && !pickBookId) {
       setPickBookId(bks[0].id);
       setPickPrice(bks[0].importPrice);
@@ -68,7 +77,11 @@ export default function ImportsAndDebtPage() {
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -94,7 +107,20 @@ export default function ImportsAndDebtPage() {
 
   const addLineToPo = () => {
     const book = books.find((b) => b.id === pickBookId);
-    if (!book || pickQty <= 0) return;
+    if (!book) {
+      showToast("Vui lòng chọn sách.", "warning");
+      return;
+    }
+    if (pickQty === "" || !Number.isInteger(pickQty) || pickQty <= 0) {
+      showToast("Số lượng nhập phải là số nguyên lớn hơn 0.", "warning");
+      return;
+    }
+    if (pickPrice === "" || !Number.isInteger(pickPrice) || pickPrice <= 0) {
+      showToast("Giá nhập phải là số nguyên lớn hơn 0.", "warning");
+      return;
+    }
+    const qty = pickQty;
+    const price = pickPrice;
     setPoItems((prev) => {
       const existing = prev.find((i) => i.bookId === book.id);
       if (existing) {
@@ -102,9 +128,9 @@ export default function ImportsAndDebtPage() {
           i.bookId === book.id
             ? {
                 ...i,
-                quantity: i.quantity + pickQty,
-                importPrice: pickPrice,
-                subtotal: (i.quantity + pickQty) * pickPrice,
+                quantity: i.quantity + qty,
+                importPrice: price,
+                subtotal: (i.quantity + qty) * price,
               }
             : i,
         );
@@ -115,9 +141,9 @@ export default function ImportsAndDebtPage() {
           bookId: book.id,
           sku: book.sku,
           title: book.title,
-          quantity: pickQty,
-          importPrice: pickPrice,
-          subtotal: pickQty * pickPrice,
+          quantity: qty,
+          importPrice: price,
+          subtotal: qty * price,
         },
       ];
     });
@@ -125,60 +151,108 @@ export default function ImportsAndDebtPage() {
 
   const handleCreatePo = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (poSubmitting) return;
     if (poItems.length === 0) {
       showToast("Vui lòng thêm ít nhất 1 đầu sách vào phiếu nhập.", "warning");
       return;
     }
     const sup = suppliers.find((s) => s.id === poSupplierId);
     if (!sup) return;
+    // Ô trống = 0. Không tự kẹp số tiền – báo rõ để người dùng sửa (backend cũng kiểm tra lại).
+    const paidValue = poPaidAmount === "" ? 0 : poPaidAmount;
+    if (paidValue < 0 || paidValue > poTotal) {
+      showToast(`Số tiền trả trước phải từ 0 đến ${formatCurrency(poTotal)}.`, "warning");
+      return;
+    }
 
-    await inventoryService.createPurchaseOrder({
-      supplierId: sup.id,
-      supplierName: sup.name,
-      createdBy: user?.fullName ?? "Nhân viên kho",
-      items: poItems,
-      totalAmount: poTotal,
-      paidAmount: Math.min(poTotal, Math.max(0, poPaidAmount)),
-      dueDate: poTotal > poPaidAmount ? poDueDate : null,
-      note: poNote,
-    });
+    setPoSubmitting(true);
+    try {
+      await inventoryService.createPurchaseOrder({
+        supplierId: sup.id,
+        supplierName: sup.name,
+        createdBy: user?.fullName ?? "Nhân viên kho", // API thật bỏ qua – lấy từ phiên đăng nhập
+        items: poItems,
+        totalAmount: poTotal, // API thật tự tính
+        paidAmount: paidValue,
+        dueDate: poTotal > paidValue ? poDueDate : null,
+        note: poNote,
+        requestKey: poRequestKey,
+      });
+    } catch (err) {
+      // Giữ form + requestKey để sửa / thử lại mà không cộng tồn hai lần.
+      showToast(err instanceof Error ? err.message : "Không lập được phiếu nhập.", "error");
+      return;
+    } finally {
+      setPoSubmitting(false);
+    }
 
-    await loadAll();
     setPoOpen(false);
     setPoItems([]);
     setPoPaidAmount(0);
     setPoNote("");
+    setPoRequestKey(crypto.randomUUID());
     showToast("Đã lập phiếu nhập kho và cập nhật số lượng sách!");
+    // Tải lại tồn, giá nhập, phiếu nhập, công nợ.
+    loadAll().catch(() => showToast("Đã lập phiếu nhưng chưa tải lại được dữ liệu, hãy tải lại trang.", "warning"));
+  };
+
+  /** Phiếu nhập còn nợ của một NCC (thanh toán bắt buộc chọn phiếu). */
+  const unpaidOrdersOf = (supplierId: string) =>
+    purchaseOrders.filter((p) => p.supplierId === supplierId && p.debtAmount > 0);
+
+  const selectPayOrder = (po?: PurchaseOrder) => {
+    setPayPoId(po?.id ?? "");
+    setPayAmount(po?.debtAmount ?? 0);
+    setPayNote(po ? `Thanh toán công nợ phiếu ${po.code}` : "");
   };
 
   const openPaymentModal = (sup: Supplier, po?: PurchaseOrder) => {
     setPaySupplierId(sup.id);
-    setPayPoId(po?.id ?? "");
-    setPayAmount(po ? po.debtAmount : sup.currentDebt);
-    setPayNote(po ? `Thanh toán công nợ phiếu ${po.code}` : `Thanh toán công nợ ${sup.name}`);
+    selectPayOrder(po ?? unpaidOrdersOf(sup.id)[0]);
     setPayOpen(true);
   };
 
   const handleRecordPayment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (paySubmitting) return;
     const sup = suppliers.find((s) => s.id === paySupplierId);
-    if (!sup || payAmount <= 0) return;
     const po = purchaseOrders.find((p) => p.id === payPoId);
+    if (!sup) return;
+    if (!po) {
+      showToast("Vui lòng chọn phiếu nhập cần thanh toán.", "warning");
+      return;
+    }
+    if (payAmount === "" || payAmount <= 0 || payAmount > po.debtAmount) {
+      showToast(`Số tiền thanh toán phải lớn hơn 0 và không vượt nợ còn lại ${formatCurrency(po.debtAmount)}.`, "warning");
+      return;
+    }
+    const amount = payAmount;
 
-    await inventoryService.recordSupplierPayment({
-      supplierId: sup.id,
-      supplierName: sup.name,
-      purchaseOrderId: po?.id,
-      purchaseOrderCode: po?.code,
-      amount: payAmount,
-      paymentMethod: payMethod,
-      recordedBy: user?.fullName ?? "Quản lý",
-      note: payNote,
-    });
+    setPaySubmitting(true);
+    try {
+      await inventoryService.recordSupplierPayment({
+        supplierId: sup.id,
+        supplierName: sup.name,
+        purchaseOrderId: po.id,
+        purchaseOrderCode: po.code,
+        amount,
+        paymentMethod: payMethod,
+        recordedBy: user?.fullName ?? "Quản lý", // API thật bỏ qua – lấy từ phiên đăng nhập
+        note: payNote,
+        requestKey: payRequestKey,
+      });
+    } catch (err) {
+      // Giữ form + requestKey (vd vượt nợ vì vừa có người trả) để sửa / thử lại.
+      showToast(err instanceof Error ? err.message : "Không ghi nhận được thanh toán.", "error");
+      return;
+    } finally {
+      setPaySubmitting(false);
+    }
 
-    await loadAll();
     setPayOpen(false);
-    showToast(`Đã ghi nhận thanh toán ${formatCurrency(payAmount)} cho ${sup.name}!`);
+    setPayRequestKey(crypto.randomUUID());
+    showToast(`Đã ghi nhận thanh toán ${formatCurrency(amount)} cho ${sup.name}!`);
+    loadAll().catch(() => showToast("Đã ghi nhận nhưng chưa tải lại được dữ liệu, hãy tải lại trang.", "warning"));
   };
 
   const filteredPos = useMemo(() => {
@@ -512,7 +586,8 @@ export default function ImportsAndDebtPage() {
               onChange={(e) => setPoSupplierId(e.target.value)}
               className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
             >
-              {suppliers.map((s) => (
+              {/* NCC ngừng hợp tác không được nhập mới (vẫn trả được nợ cũ ở form thanh toán) */}
+              {suppliers.filter((s) => s.status === "ACTIVE").map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.code} — {s.name}
                 </option>
@@ -543,7 +618,7 @@ export default function ImportsAndDebtPage() {
                 type="number"
                 min={1}
                 value={pickQty}
-                onChange={(e) => setPickQty(Number(e.target.value))}
+                onChange={(e) => setPickQty(toNumberInput(e.target.value))}
                 placeholder="SL"
                 className="sm:col-span-2 rounded-xl border border-[#E6E8E5] bg-white px-2.5 py-2 text-xs"
               />
@@ -551,7 +626,7 @@ export default function ImportsAndDebtPage() {
                 type="number"
                 min={0}
                 value={pickPrice}
-                onChange={(e) => setPickPrice(Number(e.target.value))}
+                onChange={(e) => setPickPrice(toNumberInput(e.target.value))}
                 placeholder="Giá nhập"
                 className="sm:col-span-2 rounded-xl border border-[#E6E8E5] bg-white px-2.5 py-2 text-xs"
               />
@@ -603,7 +678,8 @@ export default function ImportsAndDebtPage() {
                 min={0}
                 max={poTotal}
                 value={poPaidAmount}
-                onChange={(e) => setPoPaidAmount(Number(e.target.value))}
+                onChange={(e) => setPoPaidAmount(e.target.value === "" ? "" : Number(e.target.value))}
+                placeholder="0"
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -628,9 +704,10 @@ export default function ImportsAndDebtPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={poSubmitting}
+              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Lưu phiếu nhập kho
+              {poSubmitting ? "Đang lưu…" : "Lưu phiếu nhập kho"}
             </button>
           </div>
         </form>
@@ -649,14 +726,37 @@ export default function ImportsAndDebtPage() {
               value={paySupplierId}
               onChange={(e) => {
                 setPaySupplierId(e.target.value);
-                const s = suppliers.find((x) => x.id === e.target.value);
-                if (s) setPayAmount(s.currentDebt);
+                selectPayOrder(unpaidOrdersOf(e.target.value)[0]);
               }}
               className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
             >
-              {suppliers.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name} (Nợ hiện tại: {formatCurrency(s.currentDebt)})
+              {/* NCC còn nợ – kể cả NCC đã ngừng hợp tác (vẫn trả nợ cũ) */}
+              {suppliers
+                .filter((s) => s.currentDebt > 0 || s.id === paySupplierId)
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} (Nợ hiện tại: {formatCurrency(s.currentDebt)})
+                    {s.status === "INACTIVE" ? " – ngừng hợp tác" : ""}
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-zinc-600">Phiếu nhập cần thanh toán *</label>
+            <select
+              required
+              value={payPoId}
+              onChange={(e) => selectPayOrder(purchaseOrders.find((p) => p.id === e.target.value))}
+              className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
+            >
+              <option value="" disabled>
+                — Chọn phiếu nhập còn nợ —
+              </option>
+              {unpaidOrdersOf(paySupplierId).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.code} — còn nợ {formatCurrency(p.debtAmount)}
+                  {p.dueDate ? ` (hạn ${formatDate(p.dueDate)})` : ""}
                 </option>
               ))}
             </select>
@@ -668,9 +768,10 @@ export default function ImportsAndDebtPage() {
               <input
                 type="number"
                 required
-                min={1000}
+                min={1}
+                max={purchaseOrders.find((p) => p.id === payPoId)?.debtAmount}
                 value={payAmount}
-                onChange={(e) => setPayAmount(Number(e.target.value))}
+                onChange={(e) => setPayAmount(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2 font-bold"
               />
             </div>
@@ -707,9 +808,10 @@ export default function ImportsAndDebtPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={paySubmitting || !payPoId}
+              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Xác nhận thanh toán
+              {paySubmitting ? "Đang ghi nhận…" : "Xác nhận thanh toán"}
             </button>
           </div>
         </form>

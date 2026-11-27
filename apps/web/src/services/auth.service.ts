@@ -1,13 +1,28 @@
 import { API_ENDPOINTS, shouldUseMock } from "@/config/api";
-import { httpClient } from "@/lib/http-client";
+import { AUTH_TOKEN_KEY, AUTH_USER_KEY, httpClient } from "@/lib/http-client";
 import { DEMO_USERS } from "@/mocks/seed";
 import { getMockDb } from "@/mocks/store";
 import type { AuthUser, LoginPayload, UserRole } from "@/types";
 
-const AUTH_USER_KEY = "mocbooks_current_user";
-const AUTH_TOKEN_KEY = "mocbooks_access_token";
-
 export const authService = {
+  /** true khi đăng nhập qua backend thật (không còn tự đăng nhập / đổi vai trò kiểu Mock). */
+  isRealAuth(): boolean {
+    return !shouldUseMock("auth");
+  },
+
+  /** Xác nhận phiên với backend khi tải lại trang. Lỗi 401 sẽ bị http-client xóa phiên. */
+  async fetchCurrentUser(): Promise<AuthUser> {
+    const user = await httpClient.get<AuthUser>(API_ENDPOINTS.auth.me);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+    }
+    return user;
+  },
+
+  hasStoredToken(): boolean {
+    return typeof window !== "undefined" && !!window.localStorage.getItem(AUTH_TOKEN_KEY);
+  },
+
   async login(payload: LoginPayload): Promise<AuthUser> {
     if (!shouldUseMock("auth")) {
       const res = await httpClient.post<{ user: AuthUser; accessToken: string }>(
@@ -92,7 +107,7 @@ export const authService = {
       return httpClient.post<{ message: string }>(API_ENDPOINTS.auth.forgotPassword, { email });
     }
     return {
-      message: `Đã gửi mã xác thực đặt lại mật khẩu tới hộp thư ${email}`,
+      message: `Chế độ Mock (không gửi email): nhập mã 6 chữ số bất kỳ cho ${email}.`,
     };
   },
 

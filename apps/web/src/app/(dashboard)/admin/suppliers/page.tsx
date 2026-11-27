@@ -38,7 +38,13 @@ export default function SuppliersPage() {
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
+    // Lỗi tải (mất kết nối, hết phiên…) hiện thành thông báo thay vì bảng trống im lặng.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = useMemo(() => {
@@ -79,19 +85,23 @@ export default function SuppliersPage() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    await adminService.saveSupplier({
-      id: editing?.id,
-      name,
-      taxCode,
-      contactPerson,
-      phone,
-      email,
-      address,
-      status,
-    });
-    await loadAll();
-    setFormOpen(false);
-    showToast("Đã cập nhật hồ sơ Nhà cung cấp!");
+    try {
+      await adminService.saveSupplier({
+        id: editing?.id,
+        name,
+        taxCode,
+        contactPerson,
+        phone,
+        email,
+        address,
+        status,
+      });
+      await loadAll();
+      setFormOpen(false);
+      showToast("Đã cập nhật hồ sơ Nhà cung cấp!");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Không lưu được nhà cung cấp.", "error");
+    }
   };
 
   const supplierPos = useMemo(

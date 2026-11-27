@@ -28,6 +28,9 @@ export default function CatalogPage() {
   const [fEmail, setFEmail] = useState("");
   const [fAddress, setFAddress] = useState("");
 
+  // Chặn bấm lặp khi đang ghi (tác giả / NXB có mã tự sinh – bấm 2 lần sẽ tạo 2 bản ghi).
+  const [busy, setBusy] = useState(false);
+
   const loadAll = async () => {
     const [c, a, p] = await Promise.all([
       inventoryService.getCategories(),
@@ -40,7 +43,13 @@ export default function CatalogPage() {
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
+    // Lỗi tải (mất kết nối, hết phiên…) hiện thành thông báo thay vì bảng trống im lặng.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const q = query.trim().toLowerCase();
@@ -80,34 +89,55 @@ export default function CatalogPage() {
     setModalOpen(true);
   };
 
+  /** Chạy thao tác ghi; lỗi từ backend (trùng, đang có sách, sai quyền…) hiện thành toast. */
+  const runAction = async (
+    action: () => Promise<unknown>,
+    successMessage: string,
+    type: "success" | "info" = "success",
+  ): Promise<boolean> => {
+    if (busy) return false;
+    setBusy(true);
+    try {
+      await action();
+      await loadAll();
+      showToast(successMessage, type);
+      return true;
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Thao tác thất bại.", "error");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (tab === "CATEGORY") {
-      await inventoryService.saveCategory({
-        id: editingId,
-        code: fCode.toUpperCase() || "DM",
-        name: fName,
-        description: fDescOrBio,
-      });
-    } else if (tab === "AUTHOR") {
-      await inventoryService.saveAuthor({
-        id: editingId,
-        name: fName,
-        nationality: fNationOrPhone || "Việt Nam",
-        bio: fDescOrBio,
-      });
-    } else {
-      await inventoryService.savePublisher({
+    const saved = await runAction(() => {
+      if (tab === "CATEGORY") {
+        return inventoryService.saveCategory({
+          id: editingId,
+          code: fCode.toUpperCase() || "DM",
+          name: fName,
+          description: fDescOrBio,
+        });
+      }
+      if (tab === "AUTHOR") {
+        return inventoryService.saveAuthor({
+          id: editingId,
+          name: fName,
+          nationality: fNationOrPhone || "Việt Nam",
+          bio: fDescOrBio,
+        });
+      }
+      return inventoryService.savePublisher({
         id: editingId,
         name: fName,
         phone: fNationOrPhone,
         email: fEmail,
         address: fAddress,
       });
-    }
-    await loadAll();
-    setModalOpen(false);
-    showToast("Đã lưu thông tin danh mục thành công!");
+    }, "Đã lưu thông tin danh mục thành công!");
+    if (saved) setModalOpen(false);
   };
 
   return (
@@ -209,9 +239,7 @@ export default function CatalogPage() {
                         type="button"
                         onClick={async () => {
                           if (!window.confirm(`Xóa thể loại "${c.name}"?`)) return;
-                          await inventoryService.deleteCategory(c.id);
-                          loadAll();
-                          showToast("Đã xóa thể loại", "info");
+                          await runAction(() => inventoryService.deleteCategory(c.id), "Đã xóa thể loại", "info");
                         }}
                         className="rounded-lg border border-[#E6E8E5] p-1.5 text-zinc-500 hover:bg-[#FEE2E2] hover:text-[#B91C1C]"
                       >
@@ -267,9 +295,7 @@ export default function CatalogPage() {
                         type="button"
                         onClick={async () => {
                           if (!window.confirm(`Xóa tác giả "${a.name}"?`)) return;
-                          await inventoryService.deleteAuthor(a.id);
-                          loadAll();
-                          showToast("Đã xóa tác giả", "info");
+                          await runAction(() => inventoryService.deleteAuthor(a.id), "Đã xóa tác giả", "info");
                         }}
                         className="rounded-lg border border-[#E6E8E5] p-1.5 text-zinc-500 hover:bg-[#FEE2E2] hover:text-[#B91C1C]"
                       >
@@ -329,9 +355,7 @@ export default function CatalogPage() {
                         type="button"
                         onClick={async () => {
                           if (!window.confirm(`Xóa NXB "${p.name}"?`)) return;
-                          await inventoryService.deletePublisher(p.id);
-                          loadAll();
-                          showToast("Đã xóa Nhà xuất bản", "info");
+                          await runAction(() => inventoryService.deletePublisher(p.id), "Đã xóa Nhà xuất bản", "info");
                         }}
                         className="rounded-lg border border-[#E6E8E5] p-1.5 text-zinc-500 hover:bg-[#FEE2E2] hover:text-[#B91C1C]"
                       >
@@ -373,6 +397,8 @@ export default function CatalogPage() {
                 required
                 value={fCode}
                 onChange={(e) => setFCode(e.target.value)}
+                disabled={!!editingId}
+                title={editingId ? "Mã thể loại không đổi sau khi tạo" : undefined}
                 placeholder="VD: VH, KT, TN"
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2 uppercase"
               />
@@ -455,9 +481,10 @@ export default function CatalogPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={busy}
+              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D] disabled:opacity-50"
             >
-              Lưu danh mục
+              {busy ? "Đang lưu..." : "Lưu danh mục"}
             </button>
           </div>
         </form>

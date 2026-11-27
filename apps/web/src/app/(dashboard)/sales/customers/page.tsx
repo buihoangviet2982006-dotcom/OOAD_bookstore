@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Edit2, Eye, Plus, Search, Trash2 } from "lucide-react";
 import { Badge, Drawer, Modal, PageHeader } from "@/components/ui";
+import { shouldUseMock } from "@/config/api";
 import { useToast } from "@/context/ToastContext";
 import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
 import { salesService } from "@/services";
@@ -50,7 +51,13 @@ export default function CustomersPage() {
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
+    // Lỗi tải (mất kết nối, hết phiên…) hiện thành thông báo thay vì bảng trống im lặng.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const filtered = useMemo(() => {
@@ -91,25 +98,34 @@ export default function CustomersPage() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    await salesService.saveCustomer({
-      id: editing?.id,
-      fullName,
-      phone,
-      email,
-      address,
-      tier,
-      notes,
-    });
-    await loadAll();
-    setFormOpen(false);
-    showToast(editing ? "Đã cập nhật hồ sơ khách hàng" : "Đã thêm khách hàng mới");
+    try {
+      await salesService.saveCustomer({
+        id: editing?.id,
+        fullName,
+        phone,
+        email,
+        address,
+        tier, // API thật bỏ qua – hạng do backend tính từ chi tiêu
+        notes,
+      });
+      await loadAll();
+      setFormOpen(false);
+      showToast(editing ? "Đã cập nhật hồ sơ khách hàng" : "Đã thêm khách hàng mới");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Không lưu được khách hàng.", "error");
+    }
   };
 
   const handleDelete = async (cus: Customer) => {
     if (!window.confirm(`Xác nhận xóa khách hàng "${cus.fullName}"?`)) return;
-    await salesService.deleteCustomer(cus.id);
-    await loadAll();
-    showToast("Đã xóa thông tin khách hàng", "info");
+    try {
+      await salesService.deleteCustomer(cus.id);
+      await loadAll();
+      showToast("Đã xóa thông tin khách hàng", "info");
+    } catch (err) {
+      // Khách đã có hóa đơn: backend chặn xóa để giữ lịch sử.
+      showToast(err instanceof Error ? err.message : "Không xóa được khách hàng.", "error");
+    }
   };
 
   const customerInvoices = useMemo(
@@ -286,6 +302,8 @@ export default function CustomersPage() {
               <select
                 value={tier}
                 onChange={(e) => setTier(e.target.value as CustomerTier)}
+                disabled={!shouldUseMock("customers")}
+                title="Hạng thành viên do hệ thống tính từ tổng chi tiêu"
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
               >
                 <option value="STANDARD">Thành viên</option>

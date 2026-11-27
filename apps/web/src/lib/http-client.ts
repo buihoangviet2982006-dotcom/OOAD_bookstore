@@ -17,9 +17,21 @@ interface RequestOptions extends Omit<RequestInit, "body"> {
   body?: unknown;
 }
 
+export const AUTH_TOKEN_KEY = "mocbooks_access_token";
+export const AUTH_USER_KEY = "mocbooks_current_user";
+/** Phát ra khi backend trả 401 cho request có token (hết hạn / bị thu hồi / tài khoản bị khóa). */
+export const SESSION_EXPIRED_EVENT = "mocbooks:session-expired";
+
 function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;
-  return window.localStorage.getItem("mocbooks_access_token");
+  return window.localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+function handleSessionExpired(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  window.localStorage.removeItem(AUTH_USER_KEY);
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
 
 function buildUrl(path: string, params?: RequestOptions["params"]): string {
@@ -45,7 +57,9 @@ async function request<T>(method: string, path: string, options: RequestOptions 
   const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.timeoutMs);
 
   try {
-    const response = await fetch(buildUrl(path, params), {
+    let response: Response;
+    try {
+      response = await fetch(buildUrl(path, params), {
       method,
       headers: {
         "Content-Type": "application/json",
@@ -55,14 +69,26 @@ async function request<T>(method: string, path: string, options: RequestOptions 
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: controller.signal,
       ...rest,
-    });
+      });
+    } catch (error) {
+      // Mất kết nối / máy chủ không chạy / quá thời gian chờ: báo rõ, KHÔNG coi là thành công.
+      const timedOut = error instanceof DOMException && error.name === "AbortError";
+      throw new ApiError(
+        timedOut
+          ? "Máy chủ phản hồi quá lâu. Thao tác có thể chưa được ghi nhận – vui lòng kiểm tra lại trước khi thử tiếp."
+          : "Không kết nối được máy chủ. Kiểm tra API đang chạy rồi thử lại.",
+        0,
+      );
+    }
 
     const contentType = response.headers.get("content-type") ?? "";
-    const payload = contentType.includes("application/json")
-      ? await response.json()
+    const payload: unknown = contentType.includes("application/json")
+      ? await response.json().catch(() => null)
       : await response.text();
 
     if (!response.ok) {
+      // Có gửi token mà vẫn 401 → phiên không còn hợp lệ, xóa phiên phía FE.
+      if (response.status === 401 && token) handleSessionExpired();
       const msg =
         typeof payload === "object" && payload && "message" in payload
           ? String((payload as { message: unknown }).message)

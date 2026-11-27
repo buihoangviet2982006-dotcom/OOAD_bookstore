@@ -4,9 +4,10 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Ban, Edit2, PauseCircle, PlayCircle, Plus, Search } from "lucide-react";
 import { Badge, Modal, PageHeader } from "@/components/ui";
 import { useToast } from "@/context/ToastContext";
-import { formatCurrency, formatDate, formatDateTime } from "@/lib/format";
-import { adminService } from "@/services";
+import { emptyNumberFields, formatCurrency, formatDate, formatDateTime, toNumberInput, todayIsoDate, type NumberInput } from "@/lib/format";
+import { adminService, inventoryService } from "@/services";
 import type {
+  Category,
   DiscountType,
   PromotionCampaign,
   PromotionStatus,
@@ -30,11 +31,15 @@ export default function PromotionsPage() {
   const [cName, setCName] = useState("");
   const [cDesc, setCDesc] = useState("");
   const [cType, setCType] = useState<DiscountType>("PERCENT");
-  const [cVal, setCVal] = useState(10);
-  const [cMinOrder, setCMinOrder] = useState(300000);
+  const [cVal, setCVal] = useState<NumberInput>(10);
+  const [cMinOrder, setCMinOrder] = useState<NumberInput>(300000);
   const [cStart, setCStart] = useState("2026-11-26");
   const [cEnd, setCEnd] = useState("2026-12-31");
   const [cStatus, setCStatus] = useState<PromotionStatus>("ACTIVE");
+  // Mức giảm tối đa (chỉ cho %) và phạm vi thể loại ("" = toàn cửa hàng)
+  const [cMax, setCMax] = useState<number | "">("");
+  const [cCategoryId, setCCategoryId] = useState("");
+  const [categories, setCategories] = useState<Category[]>([]);
 
   // Voucher Modal
   const [vcOpen, setVcOpen] = useState(false);
@@ -42,24 +47,35 @@ export default function PromotionsPage() {
   const [vCode, setVCode] = useState("");
   const [vDesc, setVDesc] = useState("");
   const [vType, setVType] = useState<DiscountType>("FIXED");
-  const [vVal, setVVal] = useState(50000);
-  const [vMinOrder, setVMinOrder] = useState(400000);
-  const [vLimit, setVLimit] = useState(100);
+  const [vVal, setVVal] = useState<NumberInput>(50000);
+  const [vMinOrder, setVMinOrder] = useState<NumberInput>(400000);
+  const [vLimit, setVLimit] = useState<NumberInput>(100);
   const [vEnd, setVEnd] = useState("2026-12-31");
+  const [vMax, setVMax] = useState<number | "">("");
+  const [saving, setSaving] = useState(false);
 
   const loadAll = async () => {
-    const [p, v, u] = await Promise.all([
+    const [p, v, u, cat] = await Promise.all([
       adminService.getPromotions(),
       adminService.getVouchers(),
       adminService.getVoucherUsages(),
+      inventoryService.getCategories(),
     ]);
     setCampaigns(p);
     setVouchers(v);
     setUsages(u);
+    setCategories(cat);
   };
 
+  /** Lỗi từ backend (dữ liệu sai, trùng mã, chương trình đã hủy/kết thúc…) hiện thành toast. */
+  const showError = (err: unknown, fallback: string) =>
+    showToast(err instanceof Error ? err.message : fallback, "error");
+
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) => showError(err, "Không tải được dữ liệu khuyến mãi."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const q = query.trim().toLowerCase();
@@ -100,9 +116,11 @@ export default function PromotionsPage() {
     setCType("PERCENT");
     setCVal(10);
     setCMinOrder(300000);
-    setCStart("2026-11-26");
+    setCStart(todayIsoDate());
     setCEnd("2026-12-31");
     setCStatus("ACTIVE");
+    setCMax("");
+    setCCategoryId("");
     setCampOpen(true);
   };
 
@@ -117,38 +135,60 @@ export default function PromotionsPage() {
     setCStart(c.startDate);
     setCEnd(c.endDate);
     setCStatus(c.status);
+    setCMax(c.maxDiscountAmount ?? "");
+    setCCategoryId(c.applicableCategoryId ?? "");
     setCampOpen(true);
   };
 
   const handleSaveCampaign = async (e: React.FormEvent) => {
     e.preventDefault();
-    await adminService.savePromotion({
-      id: editCamp?.id,
-      code: cCode.toUpperCase(),
-      name: cName,
-      description: cDesc,
-      discountType: cType,
-      discountValue: cVal,
-      minOrderValue: cMinOrder,
-      applicableCategory: "Tất cả thể loại",
-      startDate: cStart,
-      endDate: cEnd,
-      status: cStatus,
-    });
-    await loadAll();
-    setCampOpen(false);
-    showToast("Đã lưu chương trình khuyến mãi!");
+    if (saving) return;
+    const missing = emptyNumberFields({ "Giá trị giảm": cVal, "Đơn tối thiểu": cMinOrder });
+    if (missing.length > 0) {
+      showToast(`Vui lòng nhập: ${missing.join(", ")}.`, "warning");
+      return;
+    }
+    setSaving(true);
+    try {
+      await adminService.savePromotion({
+        id: editCamp?.id,
+        code: cCode.toUpperCase(),
+        name: cName,
+        description: cDesc,
+        discountType: cType,
+        discountValue: Number(cVal),
+        maxDiscountAmount: cType === "PERCENT" && cMax !== "" ? cMax : undefined,
+        minOrderValue: Number(cMinOrder),
+        applicableCategoryId: cCategoryId,
+        applicableCategory:
+          categories.find((cat) => cat.id === cCategoryId)?.name ?? "Tất cả thể loại",
+        startDate: cStart,
+        endDate: cEnd,
+        status: cStatus,
+      });
+      await loadAll();
+      setCampOpen(false);
+      showToast("Đã lưu chương trình khuyến mãi!");
+    } catch (err) {
+      showError(err, "Không lưu được chương trình khuyến mãi.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const changeCampaignStatus = async (camp: PromotionCampaign, nextStatus: PromotionStatus) => {
-    await adminService.savePromotion({ ...camp, status: nextStatus });
-    await loadAll();
-    showToast(
-      nextStatus === "CANCELLED"
-        ? `Đã hủy chương trình ${camp.code}`
-        : `Đã cập nhật trạng thái chương trình ${camp.code}`,
-      "info",
-    );
+    try {
+      await adminService.savePromotion({ ...camp, status: nextStatus });
+      await loadAll();
+      showToast(
+        nextStatus === "CANCELLED"
+          ? `Đã hủy chương trình ${camp.code}`
+          : `Đã cập nhật trạng thái chương trình ${camp.code}`,
+        "info",
+      );
+    } catch (err) {
+      showError(err, "Không đổi được trạng thái chương trình.");
+    }
   };
 
   const openCreateVoucher = () => {
@@ -160,26 +200,41 @@ export default function PromotionsPage() {
     setVMinOrder(400000);
     setVLimit(100);
     setVEnd("2026-12-31");
+    setVMax("");
     setVcOpen(true);
   };
 
   const handleSaveVoucher = async (e: React.FormEvent) => {
     e.preventDefault();
-    await adminService.saveVoucher({
-      id: editVc?.id,
-      code: vCode.toUpperCase(),
-      description: vDesc,
-      discountType: vType,
-      discountValue: vVal,
-      minOrderValue: vMinOrder,
-      usageLimit: vLimit,
-      startDate: "2026-11-26",
-      endDate: vEnd,
-      isActive: true,
-    });
-    await loadAll();
-    setVcOpen(false);
-    showToast("Đã lưu mã giảm giá (Voucher)!");
+    if (saving) return;
+    const missing = emptyNumberFields({ "Giá trị giảm": vVal, "Đơn tối thiểu": vMinOrder, "Số lượt tối đa": vLimit });
+    if (missing.length > 0) {
+      showToast(`Vui lòng nhập: ${missing.join(", ")}.`, "warning");
+      return;
+    }
+    setSaving(true);
+    try {
+      await adminService.saveVoucher({
+        id: editVc?.id,
+        code: vCode.toUpperCase(), // bỏ trống → backend sinh mã ngẫu nhiên
+        description: vDesc,
+        discountType: vType,
+        discountValue: Number(vVal),
+        maxDiscountAmount: vType === "PERCENT" && vMax !== "" ? vMax : undefined,
+        minOrderValue: Number(vMinOrder),
+        usageLimit: Number(vLimit),
+        startDate: editVc?.startDate ?? todayIsoDate(),
+        endDate: vEnd,
+        isActive: editVc?.isActive ?? true,
+      });
+      await loadAll();
+      setVcOpen(false);
+      showToast("Đã lưu mã giảm giá (Voucher)!");
+    } catch (err) {
+      showError(err, "Không lưu được voucher.");
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -282,8 +337,11 @@ export default function PromotionsPage() {
                     {c.status === "SCHEDULED" && <Badge variant="blue">Sắp diễn ra</Badge>}
                     {c.status === "PAUSED" && <Badge variant="amber">Tạm dừng</Badge>}
                     {c.status === "CANCELLED" && <Badge variant="crimson">Đã hủy</Badge>}
+                    {c.status === "EXPIRED" && <Badge variant="slate">Đã kết thúc</Badge>}
                   </td>
                   <td className="px-5 py-3.5 text-right">
+                    {/* Đã hủy / đã kết thúc: chỉ xem (đặc tả QLKM) */}
+                    {c.status !== "CANCELLED" && c.status !== "EXPIRED" && (
                     <div className="inline-flex items-center gap-1.5">
                       <button
                         type="button"
@@ -293,7 +351,7 @@ export default function PromotionsPage() {
                       >
                         <Edit2 className="h-4 w-4" />
                       </button>
-                      {c.status === "ACTIVE" ? (
+                      {c.status === "ACTIVE" || c.status === "SCHEDULED" ? (
                         <button
                           type="button"
                           onClick={() => changeCampaignStatus(c, "PAUSED")}
@@ -303,28 +361,29 @@ export default function PromotionsPage() {
                           <PauseCircle className="h-4 w-4" />
                         </button>
                       ) : (
-                        c.status !== "CANCELLED" && (
-                          <button
-                            type="button"
-                            onClick={() => changeCampaignStatus(c, "ACTIVE")}
-                            className="rounded-lg border border-[#E6E8E5] p-1.5 text-[#2D6A4F] hover:bg-[#E8F3EE]"
-                            title="Kích hoạt"
-                          >
-                            <PlayCircle className="h-4 w-4" />
-                          </button>
-                        )
-                      )}
-                      {c.status !== "CANCELLED" && (
                         <button
                           type="button"
-                          onClick={() => changeCampaignStatus(c, "CANCELLED")}
-                          className="rounded-lg border border-[#E6E8E5] p-1.5 text-[#B91C1C] hover:bg-[#FEE2E2]"
-                          title="Hủy chương trình"
+                          onClick={() => changeCampaignStatus(c, "ACTIVE")}
+                          className="rounded-lg border border-[#E6E8E5] p-1.5 text-[#2D6A4F] hover:bg-[#E8F3EE]"
+                          title="Tiếp tục"
                         >
-                          <Ban className="h-4 w-4" />
+                          <PlayCircle className="h-4 w-4" />
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (window.confirm(`Hủy chương trình ${c.code}? Thao tác không thể hoàn tác.`)) {
+                            void changeCampaignStatus(c, "CANCELLED");
+                          }
+                        }}
+                        className="rounded-lg border border-[#E6E8E5] p-1.5 text-[#B91C1C] hover:bg-[#FEE2E2]"
+                        title="Hủy chương trình"
+                      >
+                        <Ban className="h-4 w-4" />
+                      </button>
                     </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -364,24 +423,37 @@ export default function PromotionsPage() {
                   </td>
                   <td className="px-5 py-3.5 text-xs text-zinc-600">{formatDate(v.endDate)}</td>
                   <td className="px-5 py-3.5 text-center">
-                    {v.isActive ? (
+                    {/* `status` do backend suy ra (API thật); Mock không có → dùng isActive */}
+                    {v.status === "EXPIRED" ? (
+                      <Badge variant="slate">Hết hạn</Badge>
+                    ) : v.status === "USED_UP" ? (
+                      <Badge variant="crimson">Hết lượt</Badge>
+                    ) : v.status === "SCHEDULED" ? (
+                      <Badge variant="blue">Chưa hiệu lực</Badge>
+                    ) : v.isActive ? (
                       <Badge variant="sage">Đang mở</Badge>
                     ) : (
-                      <Badge variant="crimson">Ngừng / Hết lượt</Badge>
+                      <Badge variant="amber">Tạm ngừng</Badge>
                     )}
                   </td>
                   <td className="px-5 py-3.5 text-right">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        await adminService.saveVoucher({ ...v, isActive: !v.isActive });
-                        loadAll();
-                        showToast("Đã cập nhật trạng thái mã giảm giá");
-                      }}
-                      className="rounded-lg border border-[#E6E8E5] px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
-                    >
-                      {v.isActive ? "Ngừng kích hoạt" : "Mở lại mã"}
-                    </button>
+                    {v.status !== "EXPIRED" && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await adminService.saveVoucher({ ...v, isActive: !v.isActive });
+                            await loadAll();
+                            showToast("Đã cập nhật trạng thái mã giảm giá");
+                          } catch (err) {
+                            showError(err, "Không đổi được trạng thái voucher.");
+                          }
+                        }}
+                        className="rounded-lg border border-[#E6E8E5] px-2.5 py-1 text-xs font-medium text-zinc-700 hover:bg-zinc-100"
+                      >
+                        {v.isActive ? "Ngừng kích hoạt" : "Mở lại mã"}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -476,7 +548,7 @@ export default function PromotionsPage() {
                 type="number"
                 min={1}
                 value={cVal}
-                onChange={(e) => setCVal(Number(e.target.value))}
+                onChange={(e) => setCVal(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -486,7 +558,37 @@ export default function PromotionsPage() {
                 type="number"
                 min={0}
                 value={cMinOrder}
-                onChange={(e) => setCMinOrder(Number(e.target.value))}
+                onChange={(e) => setCMinOrder(toNumberInput(e.target.value))}
+                className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-zinc-600">Phạm vi áp dụng</label>
+              <select
+                value={cCategoryId}
+                onChange={(e) => setCCategoryId(e.target.value)}
+                className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
+              >
+                <option value="">Toàn cửa hàng</option>
+                {categories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-zinc-600">Giảm tối đa (VNĐ, chỉ cho %)</label>
+              <input
+                type="number"
+                min={1}
+                value={cMax}
+                disabled={cType !== "PERCENT"}
+                onChange={(e) => setCMax(toNumberInput(e.target.value))}
+                placeholder="Không giới hạn"
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -533,7 +635,8 @@ export default function PromotionsPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={saving}
+              className="disabled:opacity-50 rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
             >
               Lưu chương trình
             </button>
@@ -562,7 +665,7 @@ export default function PromotionsPage() {
                 type="number"
                 min={1}
                 value={vLimit}
-                onChange={(e) => setVLimit(Number(e.target.value))}
+                onChange={(e) => setVLimit(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3.5 py-2"
               />
             </div>
@@ -586,7 +689,7 @@ export default function PromotionsPage() {
                 type="number"
                 min={1}
                 value={vVal}
-                onChange={(e) => setVVal(Number(e.target.value))}
+                onChange={(e) => setVVal(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
@@ -596,11 +699,25 @@ export default function PromotionsPage() {
                 type="number"
                 min={0}
                 value={vMinOrder}
-                onChange={(e) => setVMinOrder(Number(e.target.value))}
+                onChange={(e) => setVMinOrder(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
               />
             </div>
           </div>
+
+          {vType === "PERCENT" && (
+            <div>
+              <label className="block text-xs font-semibold text-zinc-600">Giảm tối đa (VNĐ)</label>
+              <input
+                type="number"
+                min={1}
+                value={vMax}
+                onChange={(e) => setVMax(toNumberInput(e.target.value))}
+                placeholder="Không giới hạn"
+                className="mt-1 w-full rounded-xl border border-[#E6E8E5] px-3 py-2"
+              />
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -634,7 +751,8 @@ export default function PromotionsPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={saving}
+              className="disabled:opacity-50 rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
             >
               Tạo mã Voucher
             </button>

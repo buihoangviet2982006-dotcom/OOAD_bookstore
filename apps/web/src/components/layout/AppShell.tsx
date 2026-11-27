@@ -7,7 +7,6 @@ import {
   BarChart3,
   BookOpen,
   Building2,
-  ChevronDown,
   HelpCircle,
   LayoutGrid,
   LogOut,
@@ -27,6 +26,7 @@ import {
   Warehouse,
   X,
 } from "lucide-react";
+import { anyModuleUsesMock } from "@/config/api";
 import { BRAND_CONFIG } from "@/config/brand";
 import {
   canAccessPath,
@@ -60,8 +60,13 @@ const ICON_MAP: Record<NavItem["iconName"], React.ComponentType<{ className?: st
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, isHydrated, selectedBranchId, setSelectedBranchId, switchRole, logout } =
-    useAuth();
+  const {
+    user,
+    isHydrated,
+    canSwitchRole,
+    switchRole,
+    logout,
+  } = useAuth();
   const { showToast } = useToast();
   const [mobileOpen, setMobileOpen] = useState(false);
 
@@ -93,8 +98,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   const allowed = canAccessPath(user.role, pathname);
-  const activeBranch =
-    BRAND_CONFIG.branches.find((b) => b.id === selectedBranchId) ?? BRAND_CONFIG.branches[0];
+  // Nút khôi phục dữ liệu mẫu chỉ có ý nghĩa với dữ liệu Mock trong trình duyệt.
+  const mockMode = anyModuleUsesMock();
 
   const handleResetDemo = () => {
     resetMockDb();
@@ -129,7 +134,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </button>
       </div>
 
-      {/* Branch Selector */}
+      {/* Cửa hàng – hệ thống demo một cửa hàng, không chọn chi nhánh */}
       <div className="px-4 pb-3">
         <div className="relative rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] p-2.5">
           <div className="flex items-center gap-2.5">
@@ -137,20 +142,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Store className="h-4 w-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <select
-                value={selectedBranchId}
-                onChange={(e) => setSelectedBranchId(e.target.value)}
-                className="w-full appearance-none bg-transparent pr-5 text-xs font-semibold text-zinc-800 focus:outline-none cursor-pointer"
-              >
-                {BRAND_CONFIG.branches.map((br) => (
-                  <option key={br.id} value={br.id}>
-                    {br.name}
-                  </option>
-                ))}
-              </select>
-              <div className="truncate text-[11px] text-zinc-500">{activeBranch.status}</div>
+              <div className="truncate text-xs font-semibold text-zinc-800">{BRAND_CONFIG.store.name}</div>
+              <div className="truncate text-[11px] text-zinc-500">{BRAND_CONFIG.store.address}</div>
             </div>
-            <ChevronDown className="h-4 w-4 shrink-0 text-zinc-400 pointer-events-none" />
           </div>
         </div>
       </div>
@@ -222,16 +216,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             Cần hỗ trợ?
           </div>
           <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
-            Đang chạy chế độ dữ liệu Mock sẵn sàng nối API Backend.
+            {mockMode
+              ? "Đang chạy dữ liệu Mock trong trình duyệt (không lưu vào máy chủ)."
+              : "Quên mật khẩu hoặc tài khoản bị khóa: liên hệ Quản lý cửa hàng."}
           </p>
-          <button
-            type="button"
-            onClick={handleResetDemo}
-            className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-medium text-[#2D6A4F] hover:underline"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Khôi phục dữ liệu mẫu
-          </button>
+          {mockMode && (
+            <button
+              type="button"
+              onClick={handleResetDemo}
+              className="mt-2.5 inline-flex items-center gap-1.5 text-xs font-medium text-[#2D6A4F] hover:underline"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+              Khôi phục dữ liệu mẫu
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -268,7 +266,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Menu className="h-5 w-5" />
             </button>
 
-            {/* Quick Role Switcher for testing RBAC */}
+            {/* Quick Role Switcher – chỉ hiện ở chế độ Mock, ẩn khi dùng xác thực thật */}
+            {canSwitchRole && (
             <div className="hidden md:flex items-center gap-1 rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] p-1">
               <span className="px-2 text-[11px] font-medium text-zinc-500">Vai trò test:</span>
               {(["MANAGER", "SALES", "WAREHOUSE"] as UserRole[]).map((roleKey) => {
@@ -292,6 +291,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 );
               })}
             </div>
+            )}
           </div>
 
           <div className="flex items-center gap-3">
@@ -334,7 +334,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 Phân hệ này không thuộc quyền của {ROLE_LABELS[user.role]}
               </h2>
               <p className="mt-1.5 text-sm text-zinc-500">
-                Tài khoản hiện tại không được phân quyền truy cập trang này. Bạn có thể quay về Tổng quan hoặc đổi sang vai trò Quản lý trên thanh tiêu đề để kiểm tra.
+                {canSwitchRole
+                  ? "Tài khoản hiện tại không được phân quyền truy cập trang này. Bạn có thể quay về Tổng quan hoặc đổi sang vai trò Quản lý trên thanh tiêu đề để kiểm tra."
+                  : "Tài khoản hiện tại không được phân quyền truy cập trang này. Vui lòng quay về Tổng quan hoặc liên hệ Quản lý."}
               </p>
               <div className="mt-6 flex items-center justify-center gap-3">
                 <Link
@@ -343,13 +345,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 >
                   Về trang Tổng quan
                 </Link>
-                <button
-                  type="button"
-                  onClick={() => switchRole("MANAGER")}
-                  className="rounded-xl border border-[#E6E8E5] bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-                >
-                  Chuyển sang Quản lý
-                </button>
+                {canSwitchRole && (
+                  <button
+                    type="button"
+                    onClick={() => switchRole("MANAGER")}
+                    className="rounded-xl border border-[#E6E8E5] bg-white px-4 py-2 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                  >
+                    Chuyển sang Quản lý
+                  </button>
+                )}
               </div>
             </div>
           )}

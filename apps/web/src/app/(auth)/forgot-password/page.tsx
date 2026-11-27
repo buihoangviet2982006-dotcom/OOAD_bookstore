@@ -9,7 +9,9 @@ import { authService } from "@/services";
 export default function ForgotPasswordPage() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [email, setEmail] = useState("");
-  const [otp, setOtp] = useState("682491");
+  const [otp, setOtp] = useState("");
+  // Thông báo backend trả về (vd chế độ demo: OTP in trên console máy chủ) – không tự nói "đã gửi email".
+  const [otpNotice, setOtpNotice] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +26,9 @@ export default function ForgotPasswordPage() {
     }
     setLoading(true);
     try {
-      await authService.requestPasswordReset(email.trim());
+      const { message } = await authService.requestPasswordReset(email.trim());
+      setOtpNotice(message);
+      setOtp("");
       setStep(2);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Không thể gửi yêu cầu khôi phục.");
@@ -110,8 +114,13 @@ export default function ForgotPasswordPage() {
           <>
             <h1 className="mt-6 text-xl font-bold text-zinc-900">Nhập mã OTP &amp; Mật khẩu mới</h1>
             <p className="mt-1 text-sm text-zinc-500">
-              Mã gồm 6 chữ số đã được gửi tới <strong className="text-zinc-800">{email}</strong>.
+              Nhập mã 6 chữ số cho tài khoản <strong className="text-zinc-800">{email}</strong>.
             </p>
+            {otpNotice && (
+              <div className="mt-3 rounded-xl border border-[#E6E8E5] bg-[#F7F8F6] px-3.5 py-2.5 text-xs text-zinc-600">
+                {otpNotice}
+              </div>
+            )}
 
             {error && (
               <div className="mt-4 rounded-xl border border-[#FECACA] bg-[#FEE2E2] px-3.5 py-2.5 text-xs text-[#B91C1C]">

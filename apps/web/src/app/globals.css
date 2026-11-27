@@ -50,11 +50,23 @@ body {
 }
 
 /* Print helpers for invoices & reports */
+/* Bản in hóa đơn (components/invoice/InvoiceReceipt.tsx): ẩn trên màn hình. */
+.print-receipt {
+  display: none;
+}
+
 @media print {
   body {
     background: #ffffff !important;
   }
   .no-print {
     display: none !important;
+  }
+  /* Đang in hóa đơn: chỉ in đúng hóa đơn, ẩn toàn bộ trang nền (danh sách, sidebar, nút). */
+  body.printing-receipt > *:not(.print-receipt) {
+    display: none !important;
+  }
+  body.printing-receipt > .print-receipt {
+    display: block !important;
   }
 }

@@ -5,7 +5,8 @@ import { AlertTriangle, ClipboardCheck, Plus, Search } from "lucide-react";
 import { Badge, Modal, PageHeader } from "@/components/ui";
 import { useAuth } from "@/context/AuthContext";
 import { useToast } from "@/context/ToastContext";
-import { formatCurrency, formatDateTime } from "@/lib/format";
+import { formatCurrency, formatDateTime, toNumberInput, type NumberInput } from "@/lib/format";
+import { ApiError } from "@/lib/http-client";
 import { inventoryService } from "@/services";
 import type { Book, StockAdjustment } from "@/types";
 
@@ -23,8 +24,11 @@ export default function StockPage() {
   const [auditOpen, setAuditOpen] = useState(false);
   const [auditNote, setAuditNote] = useState("");
   const [auditBookId, setAuditBookId] = useState("");
-  const [actualStock, setActualStock] = useState(0);
+  const [actualStock, setActualStock] = useState<NumberInput>(0);
   const [itemReason, setItemReason] = useState("Chênh lệch kiểm kê thực tế trên kệ");
+  // Khóa chống áp dụng lặp (giữ khi lỗi, đổi sau khi thành công) + khóa nút khi đang gửi.
+  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
+  const [submitting, setSubmitting] = useState(false);
 
   const loadAll = async () => {
     const [bk, adj] = await Promise.all([
@@ -40,7 +44,11 @@ export default function StockPage() {
   };
 
   useEffect(() => {
-    void Promise.resolve().then(() => loadAll());
+    void Promise.resolve()
+      .then(() => loadAll())
+      .catch((err: unknown) =>
+        showToast(err instanceof Error ? err.message : "Không tải được dữ liệu.", "error"),
+      );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -72,30 +80,66 @@ export default function StockPage() {
     [books, auditBookId],
   );
 
+  /** Mở form: tải lại tồn mới nhất – đây là "tồn lúc mở form" gửi kèm phiếu để backend đối chiếu. */
+  const openAudit = async () => {
+    try {
+      const fresh = await inventoryService.getBooks();
+      setBooks(fresh);
+      const current = fresh.find((b) => b.id === auditBookId) ?? fresh[0];
+      if (current) {
+        setAuditBookId(current.id);
+        setActualStock(current.stock);
+      }
+    } catch {
+      // vẫn mở form với dữ liệu đang có; backend sẽ báo nếu tồn đã thay đổi
+    }
+    setAuditOpen(true);
+  };
+
   const handleCreateAdjustment = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedAuditBook) return;
+    if (!selectedAuditBook || submitting) return;
+    // Ô trống KHÔNG được coi là 0 (tránh vô tình đưa tồn về 0); số 0 nhập rõ ràng vẫn hợp lệ.
+    if (actualStock === "" || !Number.isInteger(actualStock) || actualStock < 0) {
+      showToast("Vui lòng nhập số lượng thực tế là số nguyên từ 0 trở lên.", "warning");
+      return;
+    }
 
-    await inventoryService.createAdjustment({
-      createdBy: user?.fullName ?? "Nhân viên kho",
-      note: auditNote || "Kiểm kê và điều chỉnh tồn kho thực tế",
-      items: [
-        {
-          bookId: selectedAuditBook.id,
-          sku: selectedAuditBook.sku,
-          title: selectedAuditBook.title,
-          systemStock: selectedAuditBook.stock,
-          actualStock,
-          diff: actualStock - selectedAuditBook.stock,
-          reason: itemReason,
-        },
-      ],
-    });
+    setSubmitting(true);
+    try {
+      await inventoryService.createAdjustment({
+        createdBy: user?.fullName ?? "Nhân viên kho", // API thật bỏ qua – lấy từ phiên đăng nhập
+        note: auditNote || "Kiểm kê và điều chỉnh tồn kho thực tế",
+        items: [
+          {
+            bookId: selectedAuditBook.id,
+            sku: selectedAuditBook.sku,
+            title: selectedAuditBook.title,
+            systemStock: selectedAuditBook.stock, // tồn lúc mở form
+            actualStock,
+            diff: actualStock - selectedAuditBook.stock, // API thật tự tính
+            reason: itemReason,
+          },
+        ],
+        requestKey,
+      });
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Không lập được phiếu kiểm kê.", "error");
+      // Tồn đã thay đổi (409): tải lại tồn mới để kiểm kê lại; giữ số thực tế và lý do đã nhập.
+      if (err instanceof ApiError && err.status === 409) {
+        loadAll().catch(() => undefined);
+      }
+      return;
+    } finally {
+      setSubmitting(false);
+    }
 
-    await loadAll();
     setAuditOpen(false);
     setAuditNote("");
+    setRequestKey(crypto.randomUUID());
     showToast("Đã lập phiếu kiểm kê và cập nhật tồn kho thành công!");
+    // Tải lại tồn kho, cảnh báo tồn thấp và lịch sử kiểm kê.
+    loadAll().catch(() => showToast("Đã lập phiếu nhưng chưa tải lại được dữ liệu, hãy tải lại trang.", "warning"));
   };
 
   return (
@@ -106,7 +150,7 @@ export default function StockPage() {
         actions={
           <button
             type="button"
-            onClick={() => setAuditOpen(true)}
+            onClick={() => void openAudit()}
             className="inline-flex items-center gap-2 rounded-xl bg-[#2D6A4F] px-4 py-2 text-sm font-semibold text-white hover:bg-[#23533D]"
           >
             <Plus className="h-4 w-4" />
@@ -309,16 +353,18 @@ export default function StockPage() {
                 type="number"
                 min={0}
                 value={actualStock}
-                onChange={(e) => setActualStock(Math.max(0, Number(e.target.value)))}
+                onChange={(e) => setActualStock(toNumberInput(e.target.value))}
                 className="mt-1 w-full rounded-lg border border-[#E6E8E5] bg-white px-2.5 py-1 text-sm font-bold"
               />
             </div>
             <div>
               <span className="text-zinc-500">Chênh lệch</span>
               <div className="mt-1 text-base font-bold text-[#2D6A4F]">
-                {actualStock - (selectedAuditBook?.stock ?? 0) >= 0
-                  ? `+${actualStock - (selectedAuditBook?.stock ?? 0)}`
-                  : actualStock - (selectedAuditBook?.stock ?? 0)}
+                {actualStock === ""
+                  ? "—"
+                  : actualStock - (selectedAuditBook?.stock ?? 0) >= 0
+                    ? `+${actualStock - (selectedAuditBook?.stock ?? 0)}`
+                    : actualStock - (selectedAuditBook?.stock ?? 0)}
               </div>
             </div>
           </div>
@@ -357,9 +403,10 @@ export default function StockPage() {
             </button>
             <button
               type="submit"
-              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D]"
+              disabled={submitting}
+              className="rounded-xl bg-[#2D6A4F] px-4 py-2 font-semibold text-white hover:bg-[#23533D] disabled:cursor-not-allowed disabled:opacity-60"
             >
-              Áp dụng điều chỉnh kho
+              {submitting ? "Đang áp dụng…" : "Áp dụng điều chỉnh kho"}
             </button>
           </div>
         </form>

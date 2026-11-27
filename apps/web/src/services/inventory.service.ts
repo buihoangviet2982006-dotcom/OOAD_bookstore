@@ -6,6 +6,7 @@ import type {
   Author,
   Book,
   Category,
+  PaymentMethod,
   Publisher,
   PurchaseOrder,
   StockAdjustment,
@@ -47,10 +48,13 @@ export const inventoryService = {
     return created;
   },
 
-  async deleteBook(id: string): Promise<void> {
+  /** Trả về thông báo của backend: đã xóa hẳn hoặc đã chuyển "Ngừng kinh doanh". */
+  async deleteBook(id: string): Promise<string | undefined> {
     if (!shouldUseMock("books")) {
-      await httpClient.delete(`${API_ENDPOINTS.books}/${id}`);
-      return;
+      const res = await httpClient.delete<{ action: "DELETED" | "DISCONTINUED"; message: string }>(
+        `${API_ENDPOINTS.books}/${id}`,
+      );
+      return res.message;
     }
     const db = getMockDb();
     db.books = db.books.filter((b) => b.id !== id);
@@ -199,8 +203,12 @@ export const inventoryService = {
     return [...getMockDb().adjustments].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
+  /**
+   * API thật: mỗi dòng gửi `systemStock` = tồn lúc mở form (để backend phát hiện tồn đã đổi) và số thực tế;
+   * chênh lệch, người lập FE gửi bị bỏ qua. Phiếu áp dụng ngay.
+   */
   async createAdjustment(
-    payload: Omit<StockAdjustment, "id" | "code" | "createdAt" | "status">,
+    payload: Omit<StockAdjustment, "id" | "code" | "createdAt" | "status"> & { requestKey?: string },
   ): Promise<StockAdjustment> {
     if (!shouldUseMock("inventory")) {
       return httpClient.post<StockAdjustment>(API_ENDPOINTS.stockAdjustments, payload);
@@ -235,8 +243,15 @@ export const inventoryService = {
     return [...getMockDb().purchaseOrders].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   },
 
+  /**
+   * API thật: backend chỉ dùng NCC, sách + số lượng + giá nhập, số trả trước, hạn nợ, ghi chú, requestKey;
+   * tổng tiền / công nợ / người lập trong payload bị bỏ qua.
+   */
   async createPurchaseOrder(
-    payload: Omit<PurchaseOrder, "id" | "code" | "createdAt" | "debtAmount" | "debtStatus">,
+    payload: Omit<PurchaseOrder, "id" | "code" | "createdAt" | "debtAmount" | "debtStatus"> & {
+      requestKey?: string;
+      prepaymentMethod?: PaymentMethod;
+    },
   ): Promise<PurchaseOrder> {
     if (!shouldUseMock("imports")) {
       return httpClient.post<PurchaseOrder>(API_ENDPOINTS.purchaseOrders, payload);
@@ -303,8 +318,9 @@ export const inventoryService = {
     return [...getMockDb().supplierPayments].sort((a, b) => b.paidAt.localeCompare(a.paidAt));
   },
 
+  /** API thật: bắt buộc `purchaseOrderId`; người ghi nhận lấy từ phiên đăng nhập. */
   async recordSupplierPayment(
-    payload: Omit<SupplierPayment, "id" | "code" | "paidAt">,
+    payload: Omit<SupplierPayment, "id" | "code" | "paidAt"> & { requestKey?: string },
   ): Promise<SupplierPayment> {
     if (!shouldUseMock("imports")) {
       return httpClient.post<SupplierPayment>(API_ENDPOINTS.supplierPayments, payload);
