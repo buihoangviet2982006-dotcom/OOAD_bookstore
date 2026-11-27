@@ -1,15 +1,18 @@
 import type { Metadata } from "next";
+import { Providers } from "@/components/layout/Providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "OOAD Bookstore",
-  description: "Full-stack Bookstore built with Next.js, NestJS, Prisma, and PostgreSQL",
+  title: "Mộc Books — Quản lý Nhà sách",
+  description: "Hệ thống quản lý bán hàng, kho sách, công nợ và điều hành nhà sách",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className="h-full antialiased">
-      <body className="min-h-full flex flex-col">{children}</body>
+    <html lang="vi" className="h-full antialiased">
+      <body className="min-h-full bg-[#F7F8F6] text-zinc-900">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }
